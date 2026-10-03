@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply text-textPrimary font-sans;
+    /* Night-sky gradient: replaces flat #060818 */
+    background-color: #060709; /* fallback for browsers that don't support gradients */
+    background-image: radial-gradient(ellipse at 30% 20%, #10131F 0%, #060709 60%, #030304 100%);
+    background-attachment: fixed; /* gradient stays put during scroll */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply text-textPrimary font-semibold;
+  }
+
+  code, pre, kbd, samp {
+    @apply font-mono;
+  }
+
+  /* ── Scrollbar ─────────────────────────────────────────── */
+  ::-webkit-scrollbar       { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #060709; }
+  ::-webkit-scrollbar-thumb { @apply bg-panelBorder rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-node; }
+
+  /* ── Selection ─────────────────────────────────────────── */
+  ::selection {
+    background: rgba(127, 168, 255, 0.28);
+    @apply text-textPrimary;
+  }
+}
