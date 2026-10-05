@@ -1,15 +1,9 @@
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import {
-  Route,
-  GitBranch,
-  Grid3x3,
-  Calculator,
-  Brain,
-  Trophy,
-  Medal,
-} from "lucide-react";
+import { Trophy, Medal, Box } from "lucide-react";
 import Card from "../components/ui/Card";
+import { gameRegistryList, type GameRegistryEntry } from "../config/gameRegistry";
+import { gameIconMap } from "../config/gameIconMap";
 
 // ─── Mock data (TODO: replace with API calls) ────────────────────────────────
 
@@ -28,38 +22,14 @@ interface GameCard {
   Icon: React.ElementType;
 }
 
-const GAMES: GameCard[] = [
-  {
-    title:       "Dijkstra's Adventure",
-    description: "Find the shortest path step by step",
-    route:       "/game/dijkstra",
-    Icon:        Route,
-  },
-  {
-    title:       "BST Builder",
-    description: "Build a binary search tree by placing numbers",
-    route:       "/game/bst",
-    Icon:        GitBranch,
-  },
-  {
-    title:       "Floyd-Warshall Grid",
-    description: "Fill the all-pairs shortest path matrix",
-    route:       "/game/floyd-warshall",
-    Icon:        Grid3x3,
-  },
-  {
-    title:       "Missing Operator",
-    description: "Find the operator that makes it true",
-    route:       "/game/missing-operator",
-    Icon:        Calculator,
-  },
-  {
-    title:       "Interesting Maths Questions",
-    description: "Solve curated logic puzzles",
-    route:       "/game/maths-questions",
-    Icon:        Brain,
-  },
-];
+// Game cards are driven entirely by gameRegistry — no titles, descriptions, or
+// icons are hardcoded here.  gameRegistryList preserves the canonical display order.
+const GAMES: GameCard[] = gameRegistryList.map((entry: GameRegistryEntry) => ({
+  title:       entry.title,
+  description: entry.description,
+  route:       `/game/${entry.routeKey}`,
+  Icon:        gameIconMap[entry.iconName] ?? Box,
+}));
 
 interface LeaderboardEntry {
   rank: number;
