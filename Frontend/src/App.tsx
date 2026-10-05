@@ -10,18 +10,16 @@ import Leaderboard          from "./pages/Leaderboard";
 import GameModeSelect       from "./pages/GameModeSelect";
 import FriendModeSelect     from "./pages/FriendModeSelect";
 
+// ── Session pages ─────────────────────────────────────────────────────────────
+import SoloSession          from "./pages/SoloSession";
+import LiveMatch            from "./pages/LiveMatch";
+import ResultsScreen        from "./pages/ResultsScreen";
+
 // ── Multiplayer lobby pages ───────────────────────────────────────────────────
 import RandomQueue          from "./pages/RandomQueue";
 import InviteScreen         from "./pages/InviteScreen";
 import JoinRoomScreen       from "./pages/JoinRoomScreen";
 import JoinRedirect         from "./pages/JoinRedirect";
-
-// ── Legacy direct-play pages (kept until solo wrapper is built) ───────────────
-import DijkstraGame         from "./pages/games/DijkstraGame";
-import BSTGame              from "./pages/games/BSTGame";
-import FloydWarshallGame    from "./pages/games/FloydWarshallGame";
-import MissingOperatorGame  from "./pages/games/MissingOperatorGame";
-import MathsQuestionsGame   from "./pages/games/MathsQuestionsGame";
 
 // ─── Page transition ──────────────────────────────────────────────────────────
 const pageVariants = {
@@ -68,52 +66,41 @@ export default function App() {
           <Route path="/game/:gameType" element={
             <PageWrapper><GameModeSelect /></PageWrapper>
           } />
-          {/* Step 2: friends sub-mode chooser */}
+          {/* Step 2 (solo): 60-second session */}
+          <Route path="/game/:gameType/solo" element={
+            <PageWrapper><SoloSession /></PageWrapper>
+          } />
+          {/* Step 2 (live): multiplayer match */}
+          <Route path="/game/:gameType/match/:roomId" element={
+            <PageWrapper><LiveMatch /></PageWrapper>
+          } />
+          {/* Step 3 (both): results screen */}
+          <Route path="/game/:gameType/results" element={
+            <PageWrapper><ResultsScreen /></PageWrapper>
+          } />
+          {/* Step 2 (friends sub-mode chooser) */}
           <Route path="/game/:gameType/friends" element={
             <PageWrapper><FriendModeSelect /></PageWrapper>
           } />
 
           {/* ── Multiplayer lobby ────────────────────────────────────── */}
-          {/* Random matchmaking queue */}
           <Route path="/game/:gameType/queue" element={
             <PageWrapper><RandomQueue /></PageWrapper>
           } />
-          {/* Host: create a room, share code / link */}
           <Route path="/game/:gameType/invite" element={
             <PageWrapper><InviteScreen /></PageWrapper>
           } />
-          {/* Guest: enter a room code (gameType context known) */}
           <Route path="/game/:gameType/join" element={
             <PageWrapper><JoinRoomScreen /></PageWrapper>
           } />
-          {/* Guest: enter a room code (no gameType context — from deep-link redirect) */}
+          {/* Guest entering code without a gameType in URL (from JoinRedirect) */}
           <Route path="/join-room" element={
             <PageWrapper><JoinRoomScreen /></PageWrapper>
           } />
 
           {/* ── Deep-link entry point ────────────────────────────────── */}
-          {/* /join/:roomCode — shared invite links land here first      */}
           <Route path="/join/:roomCode" element={
             <PageWrapper><JoinRedirect /></PageWrapper>
-          } />
-
-          {/* ── Legacy direct-play routes ────────────────────────────── */}
-          {/* Kept until the solo wrapper page is built.                 */}
-          {/* TODO: replace with /game/:gameType/solo once that exists.  */}
-          <Route path="/game/dijkstra/play" element={
-            <PageWrapper><DijkstraGame /></PageWrapper>
-          } />
-          <Route path="/game/bst/play" element={
-            <PageWrapper><BSTGame /></PageWrapper>
-          } />
-          <Route path="/game/floyd-warshall/play" element={
-            <PageWrapper><FloydWarshallGame /></PageWrapper>
-          } />
-          <Route path="/game/missing-operator/play" element={
-            <PageWrapper><MissingOperatorGame /></PageWrapper>
-          } />
-          <Route path="/game/maths-questions/play" element={
-            <PageWrapper><MathsQuestionsGame /></PageWrapper>
           } />
 
         </Routes>
