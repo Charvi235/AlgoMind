@@ -5,7 +5,10 @@ import { CheckCircle2, Clock, RotateCcw } from "lucide-react";
 import Card from "../../components/ui/Card";
 import Button from "../../components/ui/Button";
 
-// ─── Theme ────────────────────────────────────────────────────────────────────
+
+// ─── Theme ─── ───────────────────────────────────────────────────────────────── //
+
+
 const C = {
   background:  "#060709",
   panel:       "#0D1130",
@@ -25,7 +28,7 @@ const OPERATORS: Operator[] = ["+", "−", "×", "÷"];
 
 // Maps display symbol → JS evaluable operator (used when wiring backend validation)
 // TODO: use OP_MAP when sending operator to /api/games/missing-operator/answer
-const OP_MAP: Record<Operator, string> = {
+const OP_MAP : Record<Operator, string> = {
   "+": "+",
   "−": "-",
   "×": "*",
