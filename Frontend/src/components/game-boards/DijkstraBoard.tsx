@@ -138,10 +138,19 @@ export interface DijkstraBoardProps {
   onWin?: (seconds: number) => void;
   /** Called when the player clicks Reset */
   onReset?: () => void;
+  /**
+   * When provided the board is running inside GameSessionShell.
+   * The shell calls this to advance the round counter; the board's own
+   * success overlay is suppressed so the shell controls round transitions.
+   *
+   * payload.correctActions = number of edges on the optimal path taken
+   * payload.totalActions   = total edges on the optimal path
+   */
+  onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
-export default function DijkstraBoard({ onWin, onReset }: DijkstraBoardProps) {
+export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: DijkstraBoardProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [game,      setGame]      = useState<GameState>(initGameState);
   const [seconds,   setSeconds]   = useState(0);
@@ -175,6 +184,16 @@ export default function DijkstraBoard({ onWin, onReset }: DijkstraBoardProps) {
       if (won) {
         setRunning(false);
         onWin?.(seconds + 1);
+        // When running inside the session shell, fire onRoundComplete instead
+        // of showing the board's own overlay (shell drives round transitions).
+        if (onRoundComplete) {
+          // correctActions = edges on the player's actual path (nodes - 1)
+          // totalActions   = edges on the optimal path (optimalPath nodes - 1)
+          onRoundComplete({
+            correctActions: newPath.length - 1,
+            totalActions:   optimalPath.length - 1,
+          });
+        }
       }
       return { currentNode: nextId, visitedNodes: newVisited, traveledEdges: newEdges, path: newPath, won };
     });
@@ -274,8 +293,8 @@ export default function DijkstraBoard({ onWin, onReset }: DijkstraBoardProps) {
     return e?.weight ?? 0;
   };
 
-  // ── Win overlay ────────────────────────────────────────────────────────
-  if (game.won) {
+  // ── Win overlay (suppressed when shell is driving round transitions) ──────
+  if (game.won && !onRoundComplete) {
     return (
       <AnimatePresence>
         <motion.div

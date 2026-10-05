@@ -70,10 +70,22 @@ interface ScoreParticle { id: number; value: string; }
 export interface MissingOperatorBoardProps {
   onGameOver?: (score: number) => void;
   onReset?:    () => void;
+  /**
+   * When provided the board is running inside GameSessionShell.
+   * The shell owns the countdown; the board's own 30-second timer
+   * and game-over overlay are both suppressed.
+   *
+   * The shell calls onRoundComplete when each operator is answered correctly.
+   * For this board one "round" = one correctly answered equation.
+   *
+   * correctActions = 1 (the equation just answered correctly)
+   * totalActions   = 1
+   */
+  onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────────
-export default function MissingOperatorBoard({ onGameOver, onReset }: MissingOperatorBoardProps) {
+export default function MissingOperatorBoard({ onGameOver, onReset, onRoundComplete }: MissingOperatorBoardProps) {
   const [deck,       setDeck]       = useState<Question[]>(() => shuffle(QUESTION_BANK));
   const [qIdx,       setQIdx]       = useState(0);
   const [showQ,      setShowQ]      = useState(true);
@@ -87,8 +99,9 @@ export default function MissingOperatorBoard({ onGameOver, onReset }: MissingOpe
 
   const currentQ = deck[qIdx % deck.length];
 
-  // Timer
+  // Timer — suppressed when GameSessionShell is in control (onRoundComplete provided)
   useEffect(() => {
+    if (onRoundComplete) return; // shell owns the countdown
     if (gameOver) return;
     if (timeLeft <= 0) {
       setGameOver(true);
@@ -97,7 +110,7 @@ export default function MissingOperatorBoard({ onGameOver, onReset }: MissingOpe
     }
     const id = setTimeout(() => setTimeLeft((t) => t - 1), 1000);
     return () => clearTimeout(id);
-  }, [timeLeft, gameOver]);
+  }, [timeLeft, gameOver, onRoundComplete]);
 
   const handlePick = useCallback(
     (op: Operator) => {
@@ -111,6 +124,10 @@ export default function MissingOperatorBoard({ onGameOver, onReset }: MissingOpe
         setTimeout(() => setParticles((p) => p.filter((x) => x.id !== pid)), 900);
         const newScore = score + 10;
         setScore(newScore);
+        // Fire shell callback if running inside GameSessionShell
+        if (onRoundComplete) {
+          onRoundComplete({ correctActions: 1, totalActions: 1 });
+        }
         setTimeout(() => {
           setShowQ(false);
           setTimeout(() => {
@@ -306,9 +323,9 @@ export default function MissingOperatorBoard({ onGameOver, onReset }: MissingOpe
         </AnimatePresence>
       </div>
 
-      {/* Game over overlay */}
+      {/* Game over overlay — suppressed when shell is driving the session */}
       <AnimatePresence>
-        {gameOver && (
+        {gameOver && !onRoundComplete && (
           <motion.div
             initial={{ opacity: 0, scale: 0.9,  y: 24 }}
             animate={{ opacity: 1, scale: 1,    y: 0  }}

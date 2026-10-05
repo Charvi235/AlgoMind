@@ -80,10 +80,19 @@ const formatTime = (s: number): string =>
 export interface FloydWarshallBoardProps {
   onWin?:   (seconds: number, score: number) => void;
   onReset?: () => void;
+  /**
+   * When provided the board is running inside GameSessionShell.
+   * Shell controls round transitions; the board's own success overlay
+   * is suppressed.
+   *
+   * correctActions = cells filled correctly this round
+   * totalActions   = total cells that needed updating
+   */
+  onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────────
-export default function FloydWarshallBoard({ onWin, onReset }: FloydWarshallBoardProps) {
+export default function FloydWarshallBoard({ onWin, onReset, onRoundComplete }: FloydWarshallBoardProps) {
   const [allSteps]  = useState<Step[]>(() => computeAllSteps(INITIAL_DIST));
   const [matrix,    setMatrix]    = useState<number[][]>(() => clone2D(INITIAL_DIST));
   const [stepIdx,   setStepIdx]   = useState(0);
@@ -127,6 +136,10 @@ export default function FloydWarshallBoard({ onWin, onReset }: FloydWarshallBoar
         setWon(true);
         setRunning(false);
         onWin?.(seconds, next * 10);
+        onRoundComplete?.({
+          correctActions: next,        // every confirmed cell is a correct action
+          totalActions:   totalSteps,
+        });
       } else {
         setStepIdx(next);
       }
@@ -436,9 +449,9 @@ export default function FloydWarshallBoard({ onWin, onReset }: FloydWarshallBoar
         ))}
       </div>
 
-      {/* Success overlay */}
+      {/* Success overlay — suppressed when shell drives round transitions */}
       <AnimatePresence>
-        {won && (
+        {won && !onRoundComplete && (
           <motion.div
             initial={{ opacity: 0, scale: 0.92, y: 20 }}
             animate={{ opacity: 1, scale: 1,    y: 0  }}

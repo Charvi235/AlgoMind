@@ -102,10 +102,19 @@ const LEVEL_H = 80;
 export interface BSTBoardProps {
   onWin?:   (score: number) => void;
   onReset?: () => void;
+  /**
+   * When provided the board is running inside GameSessionShell.
+   * Shell controls round transitions; the board's own success overlay
+   * is suppressed.
+   *
+   * correctActions = numbers correctly placed this round
+   * totalActions   = total numbers to place (excluding auto-placed root)
+   */
+  onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
-export default function BSTBoard({ onWin, onReset }: BSTBoardProps) {
+export default function BSTBoard({ onWin, onReset, onRoundComplete }: BSTBoardProps) {
   const [numbers, setNumbers]   = useState<number[]>(() => pickQuestion());
   const [queue,   setQueue]     = useState<number[]>(() => [...numbers]);
   const [placed,  setPlaced]    = useState<number[]>([]);
@@ -315,6 +324,10 @@ export default function BSTBoard({ onWin, onReset }: BSTBoardProps) {
       if (remaining.length === 0) {
         setWon(true);
         onWin?.(newScore);
+        onRoundComplete?.({
+          correctActions: placed.length, // all placements in this round were valid
+          totalActions:   total,
+        });
       }
     } else {
       setErrorSlot(hoveredSlot);
@@ -416,9 +429,9 @@ export default function BSTBoard({ onWin, onReset }: BSTBoardProps) {
         </div>
       </div>
 
-      {/* Success overlay */}
+      {/* Success overlay — suppressed when shell drives round transitions */}
       <AnimatePresence>
-        {won && (
+        {won && !onRoundComplete && (
           <motion.div
             initial={{ opacity: 0, scale: 0.9, y: 24 }}
             animate={{ opacity: 1, scale: 1,   y: 0  }}

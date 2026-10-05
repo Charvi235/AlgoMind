@@ -51,10 +51,19 @@ type OptionState = "idle" | "correct" | "wrong" | "reveal";
 export interface MathsQuestionsBoardProps {
   onComplete?: (score: number, correct: number, wrong: number) => void;
   onReset?:    () => void;
+  /**
+   * When provided the board is running inside GameSessionShell.
+   * Each correct answer fires this callback so the shell can increment its
+   * round counter. The board's own results overlay is suppressed.
+   *
+   * correctActions = 1 (one question answered correctly)
+   * totalActions   = 1
+   */
+  onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────────
-export default function MathsQuestionsBoard({ onComplete, onReset }: MathsQuestionsBoardProps) {
+export default function MathsQuestionsBoard({ onComplete, onReset, onRoundComplete }: MathsQuestionsBoardProps) {
   const [qIdx,    setQIdx]    = useState(0);
   const [score,   setScore]   = useState(0);
   const [correct, setCorrect] = useState(0);
@@ -77,6 +86,11 @@ export default function MathsQuestionsBoard({ onComplete, onReset }: MathsQuesti
       const newWrong   = !isCorrect ? wrong + 1 : wrong;
       if (isCorrect) { setScore(newScore); setCorrect(newCorrect); }
       else           { setWrong(newWrong); }
+
+      // Fire shell callback on each correct answer (one "round" per question)
+      if (isCorrect && onRoundComplete) {
+        onRoundComplete({ correctActions: 1, totalActions: 1 });
+      }
 
       setTimeout(() => {
         setShowQ(false);
@@ -295,9 +309,9 @@ export default function MathsQuestionsBoard({ onComplete, onReset }: MathsQuesti
         </AnimatePresence>
       </div>
 
-      {/* Results overlay */}
+      {/* Results overlay — suppressed when shell is driving the session */}
       <AnimatePresence>
-        {done && (
+        {done && !onRoundComplete && (
           <motion.div
             initial={{ opacity: 0, scale: 0.9,  y: 24 }}
             animate={{ opacity: 1, scale: 1,    y: 0  }}
