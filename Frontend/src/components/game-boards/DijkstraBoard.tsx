@@ -1,31 +1,27 @@
 /**
  * DijkstraBoard.tsx
  *
- * Core gameplay UI for Dijkstra's Adventure.
- * Renders the D3 graph canvas + neighbour-picker step panel.
- *
- * Props
- * ─────
- *  onWin(seconds)  — called when the player reaches the target node
- *  onReset()       — called when the player hits Reset (parent resets timer etc.)
- *  externalSeconds — optional controlled timer value supplied by a parent wrapper;
- *                    when omitted the board manages its own timer internally.
- *
- * What is NOT here (belongs in the page wrapper):
- *  - Page heading / description
- *  - Timer display
- *  - Reset button in the header area
+ * Core gameplay UI for Dijkstra's Adventure. Graph structure, size,
+ * and weights now scale with `round` (progressive difficulty within a
+ * session) via graphGenerator.ts, and layout is computed with a D3
+ * force simulation instead of fixed coordinates, so every round looks
+ * genuinely different — not just re-weighted.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, CheckCircle2 } from "lucide-react";
+import { ChevronRight, CheckCircle2, RotateCcw } from "lucide-react";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
-import { RotateCcw } from "lucide-react";
+import {
+  generateGraph,
+  type GeneratedGraph,
+  type SimpleNode,
+  type SimpleEdge,
+} from "../../utils/graphGenerator";
 
-// ─── Theme constants ──────────────────────────────────────────────────────────
+// ─── Theme constants ───────────────────────────────────────────────
 const C = {
   background:  "#060709",
   panel:       "#0D1130",
@@ -38,40 +34,44 @@ const C = {
   error:       "#FF6B8A",
 } as const;
 
-// ─── Graph data ───────────────────────────────────────────────────────────────
-interface GraphNode { id: string; label: string; x: number; y: number; }
-interface GraphEdge { source: string; target: string; weight: number; }
+const VIEW_W = 520;
+const VIEW_H = 340;
 
-const NODES: GraphNode[] = [
-  { id: "S", label: "S", x:  60, y: 170 },
-  { id: "A", label: "A", x: 170, y:  60 },
-  { id: "B", label: "B", x: 170, y: 280 },
-  { id: "C", label: "C", x: 290, y: 130 },
-  { id: "D", label: "D", x: 290, y: 240 },
-  { id: "E", label: "E", x: 400, y:  60 },
-  { id: "F", label: "F", x: 400, y: 210 },
-  { id: "T", label: "T", x: 490, y: 135 },
-];
+// ─── Layout (D3 force simulation, run synchronously once per round) ─
+interface LaidOutNode extends SimpleNode { x: number; y: number; }
 
-const EDGES: GraphEdge[] = [
-  { source: "S", target: "A", weight: 4 },
-  { source: "S", target: "B", weight: 2 },
-  { source: "A", target: "C", weight: 3 },
-  { source: "A", target: "E", weight: 5 },
-  { source: "B", target: "D", weight: 4 },
-  { source: "B", target: "C", weight: 6 },
-  { source: "C", target: "E", weight: 2 },
-  { source: "C", target: "F", weight: 1 },
-  { source: "D", target: "F", weight: 3 },
-  { source: "E", target: "T", weight: 3 },
-  { source: "F", target: "T", weight: 5 },
-];
+function computeForceLayout(nodes: SimpleNode[], edges: SimpleEdge[]): LaidOutNode[] {
+  const simNodes = nodes.map((n) => ({
+    ...n,
+    x: VIEW_W / 2 + (Math.random() - 0.5) * 40,
+    y: VIEW_H / 2 + (Math.random() - 0.5) * 40,
+  })) as (SimpleNode & d3.SimulationNodeDatum)[];
 
-const START_NODE  = "S";
-const TARGET_NODE = "T";
+  const simLinks = edges.map((e) => ({ ...e })) as unknown as d3.SimulationLinkDatum<
+    (typeof simNodes)[number]
+  >[];
 
-// ─── Dijkstra precompute ──────────────────────────────────────────────────────
-function buildAdjacency(edges: GraphEdge[]) {
+  const simulation = d3
+    .forceSimulation(simNodes)
+    .force("link", d3.forceLink(simLinks).id((d: any) => d.id).distance(95).strength(0.9))
+    .force("charge", d3.forceManyBody().strength(-260))
+    .force("center", d3.forceCenter(VIEW_W / 2, VIEW_H / 2))
+    .force("collide", d3.forceCollide(34))
+    .stop();
+
+  for (let i = 0; i < 300; i++) simulation.tick();
+
+  const PAD = 36;
+  return simNodes.map((n) => ({
+    id: n.id,
+    label: (n as SimpleNode).label,
+    x: Math.max(PAD, Math.min(VIEW_W - PAD, n.x ?? VIEW_W / 2)),
+    y: Math.max(PAD, Math.min(VIEW_H - PAD, n.y ?? VIEW_H / 2)),
+  }));
+}
+
+// ─── Dijkstra precompute ──────────────────────────────────────────
+function buildAdjacency(edges: SimpleEdge[]) {
   const adj = new Map<string, { id: string; weight: number }[]>();
   for (const e of edges) {
     if (!adj.has(e.source)) adj.set(e.source, []);
@@ -82,8 +82,8 @@ function buildAdjacency(edges: GraphEdge[]) {
   return adj;
 }
 
-function dijkstra(start: string, nodes: GraphNode[], edges: GraphEdge[]) {
-  const adj  = buildAdjacency(edges);
+function dijkstra(start: string, nodes: SimpleNode[], edges: SimpleEdge[]) {
+  const adj = buildAdjacency(edges);
   const dist = new Map<string, number>();
   const prev = new Map<string, string | null>();
   const visited = new Set<string>();
@@ -122,46 +122,47 @@ interface GameState {
   won:           boolean;
 }
 
-function initGameState(): GameState {
+function initGameState(start: string): GameState {
   return {
-    currentNode:   START_NODE,
-    visitedNodes:  new Set([START_NODE]),
+    currentNode: start,
+    visitedNodes: new Set([start]),
     traveledEdges: new Map(),
-    path:          [START_NODE],
-    won:           false,
+    path: [start],
+    won: false,
   };
 }
 
-// ─── Props ────────────────────────────────────────────────────────────────────
+// ─── Props ─────────────────────────────────────────────────────────
 export interface DijkstraBoardProps {
-  /** Called with the final elapsed seconds when the player wins */
   onWin?: (seconds: number) => void;
-  /** Called when the player clicks Reset */
   onReset?: () => void;
-  /**
-   * When provided the board is running inside GameSessionShell.
-   * The shell calls this to advance the round counter; the board's own
-   * success overlay is suppressed so the shell controls round transitions.
-   *
-   * payload.correctActions = number of edges on the optimal path taken
-   * payload.totalActions   = total edges on the optimal path
-   */
   onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
+  /** Current round number from GameSessionShell — drives difficulty. Defaults to 1 for standalone use. */
+  round?: number;
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
-export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: DijkstraBoardProps) {
+// ─── Component ─────────────────────────────────────────────────────
+export default function DijkstraBoard({ onWin, onReset, onRoundComplete, round = 1 }: DijkstraBoardProps) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [game,      setGame]      = useState<GameState>(initGameState);
+
+  // Fresh graph + layout once per mount. The shell fully remounts this
+  // component every round (via `key`), so this naturally regenerates
+  // each round at the right difficulty — no extra effects needed.
+  const [graph] = useState<GeneratedGraph>(() => generateGraph(round));
+  const [laidOutNodes] = useState<LaidOutNode[]>(() => computeForceLayout(graph.nodes, graph.edges));
+
+  const [game,      setGame]      = useState<GameState>(() => initGameState(graph.start));
   const [seconds,   setSeconds]   = useState(0);
   const [running,   setRunning]   = useState(true);
   const [flashEdge, setFlashEdge] = useState<string | null>(null);
 
-  const { prev: optPrev } = dijkstra(START_NODE, NODES, EDGES);
-  const optimalPath = buildOptimalPath(TARGET_NODE, optPrev);
-  const adjacency   = buildAdjacency(EDGES);
+  const labelById = new Map(graph.nodes.map((n) => [n.id, n.label]));
+  const labelOf = (id: string) => labelById.get(id) ?? id;
 
-  // ── Internal timer ─────────────────────────────────────────────────────
+  const { prev: optPrev } = dijkstra(graph.start, graph.nodes, graph.edges);
+  const optimalPath = buildOptimalPath(graph.target, optPrev);
+  const adjacency   = buildAdjacency(graph.edges);
+
   useEffect(() => {
     if (!running) return;
     const id = setInterval(() => setSeconds((s) => s + 1), 1000);
@@ -180,15 +181,11 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
       const newEdges   = new Map(prev.traveledEdges);
       newEdges.set(key, "traveled");
       const newPath = [...prev.path, nextId];
-      const won     = nextId === TARGET_NODE;
+      const won     = nextId === graph.target;
       if (won) {
         setRunning(false);
         onWin?.(seconds + 1);
-        // When running inside the session shell, fire onRoundComplete instead
-        // of showing the board's own overlay (shell drives round transitions).
         if (onRoundComplete) {
-          // correctActions = edges on the player's actual path (nodes - 1)
-          // totalActions   = edges on the optimal path (optimalPath nodes - 1)
           onRoundComplete({
             correctActions: newPath.length - 1,
             totalActions:   optimalPath.length - 1,
@@ -197,17 +194,17 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
       }
       return { currentNode: nextId, visitedNodes: newVisited, traveledEdges: newEdges, path: newPath, won };
     });
-  }, [game, seconds, onWin]);
+  }, [game, seconds, onWin, onRoundComplete, graph.target, optimalPath.length]);
 
   const handleReset = useCallback(() => {
-    setGame(initGameState());
+    setGame(initGameState(graph.start));
     setSeconds(0);
     setRunning(true);
     setFlashEdge(null);
     onReset?.();
-  }, [onReset]);
+  }, [onReset, graph.start]);
 
-  // ── D3 render ──────────────────────────────────────────────────────────
+  // ── D3 render ────────────────────────────────────────────────────
   useEffect(() => {
     if (!svgRef.current) return;
     const svg = d3.select(svgRef.current);
@@ -228,11 +225,10 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
     makeGlow("dij-glow-gold", C.gold, 8);
     makeGlow("dij-glow-teal", C.teal, 6);
 
-    const nodeMap = new Map(NODES.map((n) => [n.id, n]));
+    const nodeMap = new Map(laidOutNodes.map((n) => [n.id, n]));
 
-    // Edges
     const edgeGroup = svg.append("g");
-    EDGES.forEach((e) => {
+    graph.edges.forEach((e) => {
       const src = nodeMap.get(e.source)!;
       const tgt = nodeMap.get(e.target)!;
       const key = edgeKey(e.source, e.target);
@@ -253,13 +249,15 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
         .attr("pointer-events", "none").text(e.weight);
     });
 
-    // Nodes
     const nodeGroup = svg.append("g");
-    NODES.forEach((n) => {
-      const isStart   = n.id === START_NODE;
-      const isTarget  = n.id === TARGET_NODE;
+    laidOutNodes.forEach((n) => {
+      const isStart   = n.id === graph.start;
+      const isTarget  = n.id === graph.target;
       const isCurrent = n.id === game.currentNode;
       const isVisited = game.visitedNodes.has(n.id);
+      const isSelectable = !game.won && adjacency.get(game.currentNode)?.some(
+        (nb) => nb.id === n.id && !game.visitedNodes.has(n.id)
+      );
       const fill   = isTarget ? C.gold : isVisited ? C.teal : C.node;
       const filter = isTarget ? "url(#dij-glow-gold)" : isCurrent || isVisited ? "url(#dij-glow-teal)" : "url(#dij-glow-node)";
       const r = isCurrent ? 18 : 15;
@@ -273,6 +271,16 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
           .attr("stroke", C.gold).attr("stroke-width", 1.5).attr("opacity", 0.5)
           .attr("stroke-dasharray", "4 3");
       }
+           if (isSelectable) {
+        g.append("circle")
+          .attr("r", r + 4)
+          .attr("fill", "none")
+          .attr("stroke", C.gold)
+          .attr("stroke-width", 1.5)
+          .attr("opacity", 0.55)
+          .attr("class", "dij-selectable-ring");
+      }
+
       g.append("circle").attr("r", r).attr("fill", fill)
         .attr("opacity", isVisited || isTarget || isCurrent ? 1 : 0.75).attr("filter", filter);
       g.append("circle").attr("r", r - 4).attr("fill", C.panel).attr("opacity", 0.55);
@@ -282,18 +290,86 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
         .attr("font-size", "13px").attr("font-weight", "600")
         .attr("font-family", "JetBrains Mono, monospace").attr("pointer-events", "none")
         .text(n.label);
+
+      // Invisible larger hit-area for easier clicking/tapping
+      if (isSelectable) {
+        g.append("circle")
+          .attr("r", 26)
+          .attr("fill", "transparent")
+          .attr("cursor", "pointer")
+          .on("click", () => handlePick(n.id))
+          .on("mouseenter", function () {
+            d3.select(this.parentNode as Element).select(".dij-selectable-ring")
+              .transition().duration(150).attr("r", r + 7).attr("opacity", 0.9);
+          })
+          .on("mouseleave", function () {
+            d3.select(this.parentNode as Element).select(".dij-selectable-ring")
+              .transition().duration(150).attr("r", r + 4).attr("opacity", 0.55);
+          });
+      }
+
+          if (isSelectable) {
+        g.append("circle")
+          .attr("r", r + 4)
+          .attr("fill", "none")
+          .attr("stroke", C.gold)
+          .attr("stroke-width", 1.5)
+          .attr("opacity", 0.55)
+          .attr("class", "dij-selectable-ring");
+      }
+
+      g.append("circle").attr("r", r).attr("fill", fill)
+        .attr("opacity", isVisited || isTarget || isCurrent ? 1 : 0.75).attr("filter", filter);
+      g.append("circle").attr("r", r - 4).attr("fill", C.panel).attr("opacity", 0.55);
+      g.append("text")
+        .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+        .attr("fill", isTarget ? C.gold : isVisited ? C.teal : C.textPrimary)
+        .attr("font-size", "13px").attr("font-weight", "600")
+        .attr("font-family", "JetBrains Mono, monospace").attr("pointer-events", "none")
+        .text(n.label);
+
+      // Invisible larger hit-area for easier clicking/tapping
+      if (isSelectable) {
+        g.append("circle")
+          .attr("r", 26)
+          .attr("fill", "transparent")
+          .attr("cursor", "pointer")
+          .on("click", () => handlePick(n.id))
+          .on("mouseenter", function () {
+            d3.select(this.parentNode as Element).select(".dij-selectable-ring")
+              .transition().duration(150).attr("r", r + 7).attr("opacity", 0.9);
+          })
+          .on("mouseleave", function () {
+            d3.select(this.parentNode as Element).select(".dij-selectable-ring")
+              .transition().duration(150).attr("r", r + 4).attr("opacity", 0.55);
+          });
+      }
+
+      if (isCurrent && !game.won) {
+        g.append("circle")
+          .attr("r", r + 6)
+          .attr("fill", "none")
+          .attr("stroke", C.teal)
+          .attr("stroke-width", 1)
+          .attr("opacity", 0.5)
+          .append("animate")
+          .attr("attributeName", "r")
+          .attr("values", `${r + 4};${r + 10};${r + 4}`)
+          .attr("dur", "1.6s")
+          .attr("repeatCount", "indefinite");
+      }
     });
-  }, [game, flashEdge]);
+  }, [game, flashEdge, graph, laidOutNodes, adjacency, handlePick]);
 
   const weightTo = (neighborId: string): number => {
-    const e = EDGES.find(
+    const e = graph.edges.find(
       (ed) => (ed.source === game.currentNode && ed.target === neighborId) ||
               (ed.target === game.currentNode && ed.source === neighborId)
     );
     return e?.weight ?? 0;
   };
 
-  // ── Win overlay (suppressed when shell is driving round transitions) ──────
+  // ── Win overlay (suppressed when shell is driving round transitions) ─
   if (game.won && !onRoundComplete) {
     return (
       <AnimatePresence>
@@ -307,7 +383,7 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
             <h2 className="font-sans text-2xl font-bold text-textPrimary">Path found!</h2>
             <p className="mt-1 text-sm text-textMuted">
               You reached <span className="font-mono text-gold">T</span> in{" "}
-              <span className="font-mono text-teal">{game.path.join(" → ")}</span>
+              <span className="font-mono text-teal">{game.path.map(labelOf).join(" → ")}</span>
             </p>
           </div>
           <Button variant="secondary" onClick={handleReset} className="gap-2">
@@ -318,10 +394,9 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
     );
   }
 
-  // ── Main board ─────────────────────────────────────────────────────────
+  // ── Main board ───────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-4">
-      {/* Path trail */}
       <div
         className="flex items-center flex-wrap gap-1 rounded-lg border border-panelBorder bg-panel/60 px-4 py-2.5"
         aria-label="Current path"
@@ -331,8 +406,8 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
         {game.path.map((nodeId, i) => (
           <span key={i} className="flex items-center gap-1">
             <span className={`font-mono text-sm font-semibold ${
-              nodeId === TARGET_NODE ? "text-gold" : nodeId === START_NODE ? "text-node" : "text-teal"
-            }`}>{nodeId}</span>
+              nodeId === graph.target ? "text-gold" : nodeId === graph.start ? "text-node" : "text-teal"
+            }`}>{labelOf(nodeId)}</span>
             {i < game.path.length - 1 && (
               <ChevronRight size={12} className="text-textMuted" aria-hidden="true" />
             )}
@@ -340,28 +415,26 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
         ))}
       </div>
 
-      {/* Graph + step panel */}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-        {/* Graph SVG */}
         <Card className="flex-1 min-w-0 !p-3 overflow-hidden">
           <svg
             ref={svgRef}
-            viewBox="0 0 520 340"
+            viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
             className="w-full h-auto"
             aria-label="Dijkstra graph visualisation"
             role="img"
           />
         </Card>
 
-        {/* Step panel */}
         <div className="w-full lg:w-64 shrink-0 flex flex-col gap-4">
           <Card className="flex flex-col gap-4">
             <div>
               <p className="text-xs uppercase tracking-widest text-textMuted mb-1">Current node</p>
-              <span className="font-mono text-3xl font-bold text-node">{game.currentNode}</span>
+              <span className="font-mono text-3xl font-bold text-node">{labelOf(game.currentNode)}</span>
             </div>
-            <div>
-              <p className="text-xs uppercase tracking-widest text-textMuted mb-2">Choose next node</p>
+                        <div>
+              <p className="text-xs uppercase tracking-widest text-textMuted mb-2">Available moves</p>
+              <p className="text-[11px] text-textMuted mb-2 italic">Click a glowing node on the graph to move.</p>
               {neighbors.length === 0 ? (
                 <p className="text-xs text-textMuted italic">
                   No unvisited neighbors — reset to try again.
@@ -369,18 +442,12 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
               ) : (
                 <ul className="flex flex-col gap-2" role="list">
                   {neighbors.map((nb) => (
-                    <li key={nb.id}>
-                      <motion.button
-                        whileHover={{ scale: 1.03 }}
-                        whileTap={{ scale: 0.97 }}
-                        transition={{ type: "spring", stiffness: 400, damping: 20 }}
-                        onClick={() => handlePick(nb.id)}
-                        className="w-full flex items-center justify-between rounded-lg border border-panelBorder bg-background/60 px-3 py-2 text-left hover:border-node/60 hover:bg-node/5 transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-node min-h-[44px]"
-                        aria-label={`Move to node ${nb.id}, weight ${weightTo(nb.id)}`}
-                      >
-                        <span className="font-mono text-sm font-semibold text-textPrimary">{nb.id}</span>
-                        <span className="font-mono text-xs text-textMuted">w: {weightTo(nb.id)}</span>
-                      </motion.button>
+                    <li
+                      key={nb.id}
+                      className="w-full flex items-center justify-between rounded-lg border border-panelBorder bg-background/40 px-3 py-2"
+                    >
+                      <span className="font-mono text-sm font-semibold text-textPrimary">{labelOf(nb.id)}</span>
+                      <span className="font-mono text-xs text-textMuted">w: {weightTo(nb.id)}</span>
                     </li>
                   ))}
                 </ul>
@@ -391,11 +458,12 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
                 <ChevronRight size={12} className="group-open:rotate-90 transition-transform" aria-hidden="true" />
                 Show optimal path
               </summary>
-              <p className="mt-2 font-mono text-xs text-teal break-all">{optimalPath.join(" → ")}</p>
+              <p className="mt-2 font-mono text-xs text-teal break-all">
+                {optimalPath.map(labelOf).join(" → ")}
+              </p>
             </details>
           </Card>
 
-          {/* Legend */}
           <Card className="!p-4 flex flex-col gap-2">
             <p className="text-xs uppercase tracking-widest text-textMuted mb-1">Legend</p>
             {[
@@ -412,7 +480,6 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete }: Dijks
             ))}
           </Card>
 
-          {/* Reset */}
           <Button variant="secondary" onClick={handleReset} className="gap-1.5 !px-3 !py-1.5 text-xs w-full justify-center">
             <RotateCcw size={13} aria-hidden="true" /> Reset
           </Button>

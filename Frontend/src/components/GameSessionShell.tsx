@@ -274,9 +274,10 @@ export default function GameSessionShell({
       */}
       {timeLeft > 0 ? (
         <Board
-          key={boardKey}
-          onRoundComplete={handleRoundComplete}
-        />
+  key={boardKey}
+  round={round}
+  onRoundComplete={handleRoundComplete}
+/>
       ) : (
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
