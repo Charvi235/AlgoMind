@@ -1,20 +1,11 @@
-/**
- * gameRegistry.ts
- *
- * Single source of truth for every game's metadata.
- * All titles, descriptions, icons, and route keys are defined here.
- * No game name, description, or icon should be hardcoded anywhere else.
- */
 
-// Lucide icon names — resolved to actual components at call-site
-// We store the name as a string so the registry is serialisable;
-// consumers call `gameIconMap[entry.iconName]` to get the component.
 export type GameType =
   | "dijkstra"
   | "bst"
   | "floyd-warshall"
   | "missing-operator"
-  | "maths-questions";
+  | "maths-questions"
+  | "sorting";
 
 export interface GameRegistryEntry {
   /** Human-readable title shown in headings and cards */
@@ -58,6 +49,12 @@ export const gameRegistry: Record<GameType, GameRegistryEntry> = {
     iconName:    "Brain",
     routeKey:    "maths-questions",
   },
+  sorting: {
+    title:       "Sorting Showdown",
+    description: "Sort the bars by hand — bubble, insertion & selection",
+    iconName:    "ArrowUpDown",
+    routeKey:    "sorting",
+  },
 } as const;
 
 /**
@@ -69,6 +66,7 @@ export const gameRegistryList: GameRegistryEntry[] = [
   gameRegistry["floyd-warshall"],
   gameRegistry["missing-operator"],
   gameRegistry["maths-questions"],
+  gameRegistry["sorting"],
 ];
 
 /**
@@ -80,6 +78,7 @@ export function isGameType(value: string | undefined): value is GameType {
     value === "bst" ||
     value === "floyd-warshall" ||
     value === "missing-operator" ||
-    value === "maths-questions"
+    value === "maths-questions" ||
+    value === "sorting"
   );
 }
