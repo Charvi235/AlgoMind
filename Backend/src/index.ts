@@ -2,12 +2,16 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import http from "http";
-//import authRoutes from "./routes/authRoutes";
+import authRoutes from "./routes/authRoutes";
 import { Server as SocketIOServer } from "socket.io";
 import { connectDB } from "./config/db";
 import { errorHandler } from "./middleware/errorHandler";
 import dijkstraRoutes from "./routes/dijkstraRoutes";
+
 import bstRoutes from "./routes/bstRoutes";
+
+//import sessionRoutes from "./routes/sessionRoutes";
+
 import { registerSocketHandlers } from "./sockets/socketHandlers";
 
 dotenv.config();
@@ -19,18 +23,21 @@ const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
 app.use(express.json());
 
-// ─── Health check ──────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 app.use("/api/games/dijkstra", dijkstraRoutes);
+
 app.use("/api/games/bst", bstRoutes); 
 // app.use("/api/auth", authRoutes);
 //import sessionRoutes from "./routes/sessionRoutes";
 // ─── Error handler (must be last) ──────────────────────────────
+
+app.use("/api/auth", authRoutes);
+//app.use("/api/sessions", sessionRoutes);
+
 app.use(errorHandler);
 
-// ─── HTTP + Socket.io server ───────────────────────────────────
 const server = http.createServer(app);
 export const io = new SocketIOServer(server, {
   cors: { origin: CLIENT_URL, credentials: true },

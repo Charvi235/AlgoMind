@@ -1,11 +1,11 @@
 /**
  * DijkstraBoard.tsx
  *
- * Core gameplay UI for Dijkstra's Adventure. Graph structure, size,
- * and weights now scale with `round` (progressive difficulty within a
- * session) via graphGenerator.ts, and layout is computed with a D3
- * force simulation instead of fixed coordinates, so every round looks
- * genuinely different — not just re-weighted.
+ * Core gameplay UI for Dijkstra's Adventure.
+ * - Solo mode: fetches a fresh graph via REST, validates each move via REST.
+ * - Live mode: receives rounds pushed by the server over Socket.io,
+ *   validates each move via a socket round-trip. Server is authoritative
+ *   in both modes — no graph or shortest-path logic runs on the client.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -14,12 +14,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ChevronRight, CheckCircle2, RotateCcw } from "lucide-react";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
-import {
-  generateGraph,
-  type GeneratedGraph,
-  type SimpleNode,
-  type SimpleEdge,
-} from "../../utils/graphGenerator";
+import { socket } from "../../lib/socket";
+import type { SimpleNode, SimpleEdge } from "../../utils/graphGenerator";
+
 
 // ─── Theme constants ───────────────────────────────────────────────
 const C = {
@@ -36,6 +33,36 @@ const C = {
 
 const VIEW_W = 520;
 const VIEW_H = 340;
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
+
+// ─── Server graph shape ────────────────────────────────────────────
+interface ServerGraph {
+  graphId?: string; // present in solo mode (REST), absent in live mode (socket)
+  nodes: SimpleNode[];
+  edges: SimpleEdge[];
+  start: string;
+  target: string;
+}
+
+async function fetchNewGraph(round: number): Promise<ServerGraph> {
+  const res = await fetch(`${API_BASE}/api/games/dijkstra/new?round=${round}`);
+  if (!res.ok) throw new Error("Failed to fetch graph");
+  return res.json();
+}
+
+async function validateStep(
+  graphId: string,
+  currentNode: string,
+  chosenNode: string
+): Promise<{ correct: boolean; isComplete: boolean }> {
+  const res = await fetch(`${API_BASE}/api/games/dijkstra/validate-step`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ graphId, currentNode, chosenNode }),
+  });
+  if (!res.ok) throw new Error("Failed to validate step");
+  return res.json();
+}
 
 // ─── Layout (D3 force simulation, run synchronously once per round) ─
 interface LaidOutNode extends SimpleNode { x: number; y: number; }
@@ -70,7 +97,7 @@ function computeForceLayout(nodes: SimpleNode[], edges: SimpleEdge[]): LaidOutNo
   }));
 }
 
-// ─── Dijkstra precompute ──────────────────────────────────────────
+// ─── Client-side helpers (hint-path display only, never used for validation) ─
 function buildAdjacency(edges: SimpleEdge[]) {
   const adj = new Map<string, { id: string; weight: number }[]>();
   for (const e of edges) {
@@ -137,31 +164,85 @@ export interface DijkstraBoardProps {
   onWin?: (seconds: number) => void;
   onReset?: () => void;
   onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
-  /** Current round number from GameSessionShell — drives difficulty. Defaults to 1 for standalone use. */
   round?: number;
+  /** "solo" (default) fetches via REST. "live" uses Socket.io, server-pushed rounds. */
+  mode?: "solo" | "live";
+  /** Live mode only — lets the shell display the server-authoritative round number. */
+  onRoundChange?: (round: number) => void;
 }
 
 // ─── Component ─────────────────────────────────────────────────────
-export default function DijkstraBoard({ onWin, onReset, onRoundComplete, round = 1 }: DijkstraBoardProps) {
+export default function DijkstraBoard({
+  onWin, onReset, onRoundComplete, round = 1, mode = "solo", onRoundChange,
+}: DijkstraBoardProps) {
   const svgRef = useRef<SVGSVGElement>(null);
 
-  // Fresh graph + layout once per mount. The shell fully remounts this
-  // component every round (via `key`), so this naturally regenerates
-  // each round at the right difficulty — no extra effects needed.
-  const [graph] = useState<GeneratedGraph>(() => generateGraph(round));
-  const [laidOutNodes] = useState<LaidOutNode[]>(() => computeForceLayout(graph.nodes, graph.edges));
+  const [graph, setGraph] = useState<ServerGraph | null>(null);
+  const [laidOutNodes, setLaidOutNodes] = useState<LaidOutNode[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [game,      setGame]      = useState<GameState>(() => initGameState(graph.start));
-  const [seconds,   setSeconds]   = useState(0);
-  const [running,   setRunning]   = useState(true);
-  const [flashEdge, setFlashEdge] = useState<string | null>(null);
+  const [game,       setGame]       = useState<GameState | null>(null);
+  const [seconds,    setSeconds]    = useState(0);
+  const [running,    setRunning]    = useState(true);
+  const [flashEdge,  setFlashEdge]  = useState<string | null>(null);
+  const [validating, setValidating] = useState(false);
 
-  const labelById = new Map(graph.nodes.map((n) => [n.id, n.label]));
+  // ── Solo mode: fetch a fresh graph via REST ─────────────────────
+  useEffect(() => {
+    if (mode !== "solo") return;
+    let cancelled = false;
+    setLoadError(null);
+    fetchNewGraph(round)
+      .then((g) => {
+        if (cancelled) return;
+        setGraph(g);
+        setLaidOutNodes(computeForceLayout(g.nodes, g.edges));
+        setGame(initGameState(g.start));
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError("Couldn't load the graph. Check your connection and try again.");
+      });
+    return () => { cancelled = true; };
+  }, [round, mode]);
+
+  // ── Live mode: receive rounds pushed by the server over Socket.io ─
+  useEffect(() => {
+    if (mode !== "live") return;
+    setLoadError(null);
+
+    const applyRound = (data: ServerGraph & { round: number }) => {
+      setGraph(data);
+      setLaidOutNodes(computeForceLayout(data.nodes, data.edges));
+      setGame(initGameState(data.start));
+      onRoundChange?.(data.round);
+    };
+
+    socket.on("match_start", applyRound);
+    socket.on("round_data", applyRound);
+    socket.on("round_state", applyRound);
+
+    // Covers the race where match_start/round_data fired before this
+    // component finished mounting — ask the server to resend current state.
+    socket.emit("request_round_state");
+
+    return () => {
+      socket.off("match_start", applyRound);
+      socket.off("round_data", applyRound);
+      socket.off("round_state", applyRound);
+    };
+  }, [mode, onRoundChange]);
+
+  const labelById = new Map((graph?.nodes ?? []).map((n) => [n.id, n.label]));
   const labelOf = (id: string) => labelById.get(id) ?? id;
 
-  const { prev: optPrev } = dijkstra(graph.start, graph.nodes, graph.edges);
-  const optimalPath = buildOptimalPath(graph.target, optPrev);
-  const adjacency   = buildAdjacency(graph.edges);
+  // Client still computes the optimal path JUST for the "Show optimal
+  // path" hint UI — actual move validation always goes through the
+  // server (see handlePick), so this can't be used to cheat.
+  const { prev: optPrev } = graph
+    ? dijkstra(graph.start, graph.nodes, graph.edges)
+    : { prev: new Map() };
+  const optimalPath = graph ? buildOptimalPath(graph.target, optPrev) : [];
+  const adjacency   = graph ? buildAdjacency(graph.edges) : new Map();
 
   useEffect(() => {
     if (!running) return;
@@ -169,44 +250,81 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete, round =
     return () => clearInterval(id);
   }, [running]);
 
-  const neighbors = (adjacency.get(game.currentNode) ?? []).filter(
-    (n) => !game.visitedNodes.has(n.id)
-  );
+  const neighbors = game
+    ? (adjacency.get(game.currentNode) ?? []).filter((n) => !game.visitedNodes.has(n.id))
+    : [];
 
   const handlePick = useCallback((nextId: string) => {
-    if (game.won) return;
+    if (!game || !graph || game.won || validating) return;
+
     const key = edgeKey(game.currentNode, nextId);
-    setGame((prev) => {
-      const newVisited = new Set(prev.visitedNodes).add(nextId);
-      const newEdges   = new Map(prev.traveledEdges);
-      newEdges.set(key, "traveled");
-      const newPath = [...prev.path, nextId];
-      const won     = nextId === graph.target;
-      if (won) {
-        setRunning(false);
-        onWin?.(seconds + 1);
-        if (onRoundComplete) {
-          onRoundComplete({
-            correctActions: newPath.length - 1,
-            totalActions:   optimalPath.length - 1,
-          });
+    setValidating(true);
+
+    if (mode === "live") {
+      socket.emit("submit_step", { currentNode: game.currentNode, chosenNode: nextId });
+      socket.once("step_result", ({ correct, isComplete }: { correct: boolean; isComplete: boolean }) => {
+        setValidating(false);
+        if (!correct) {
+          setFlashEdge(key);
+          setTimeout(() => setFlashEdge(null), 500);
+          return;
         }
-      }
-      return { currentNode: nextId, visitedNodes: newVisited, traveledEdges: newEdges, path: newPath, won };
-    });
-  }, [game, seconds, onWin, onRoundComplete, graph.target, optimalPath.length]);
+        setGame((prev) => {
+          if (!prev) return prev;
+          const newVisited = new Set(prev.visitedNodes).add(nextId);
+          const newEdges   = new Map(prev.traveledEdges);
+          newEdges.set(key, "traveled");
+          const newPath = [...prev.path, nextId];
+          if (isComplete) {
+            onWin?.(seconds + 1);
+            onRoundComplete?.({ correctActions: newPath.length - 1, totalActions: newPath.length - 1 });
+          }
+          // won stays false here — the server pushes the next round via
+          // "round_data" shortly, which resets the board automatically.
+          return { currentNode: nextId, visitedNodes: newVisited, traveledEdges: newEdges, path: newPath, won: false };
+        });
+      });
+      return;
+    }
+
+    // ── Solo mode: REST validation ────────────────────────────────
+    validateStep(graph.graphId!, game.currentNode, nextId)
+      .then(({ correct, isComplete }) => {
+        if (!correct) {
+          setFlashEdge(key);
+          setTimeout(() => setFlashEdge(null), 500);
+          return;
+        }
+        setGame((prev) => {
+          if (!prev) return prev;
+          const newVisited = new Set(prev.visitedNodes).add(nextId);
+          const newEdges   = new Map(prev.traveledEdges);
+          newEdges.set(key, "traveled");
+          const newPath = [...prev.path, nextId];
+          if (isComplete) {
+            setRunning(false);
+            onWin?.(seconds + 1);
+            onRoundComplete?.({ correctActions: newPath.length - 1, totalActions: optimalPath.length - 1 });
+          }
+          return { currentNode: nextId, visitedNodes: newVisited, traveledEdges: newEdges, path: newPath, won: isComplete };
+        });
+      })
+      .catch(() => setLoadError("Couldn't validate that move. Check your connection."))
+      .finally(() => setValidating(false));
+  }, [game, graph, validating, seconds, onWin, onRoundComplete, optimalPath.length, mode]);
 
   const handleReset = useCallback(() => {
+    if (!graph) return;
     setGame(initGameState(graph.start));
     setSeconds(0);
     setRunning(true);
     setFlashEdge(null);
     onReset?.();
-  }, [onReset, graph.start]);
+  }, [onReset, graph]);
 
   // ── D3 render ────────────────────────────────────────────────────
   useEffect(() => {
-    if (!svgRef.current) return;
+    if (!svgRef.current || !graph || !game) return;
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
 
@@ -262,6 +380,7 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete, round =
       const filter = isTarget ? "url(#dij-glow-gold)" : isCurrent || isVisited ? "url(#dij-glow-teal)" : "url(#dij-glow-node)";
       const r = isCurrent ? 18 : 15;
       const g = nodeGroup.append("g").attr("transform", `translate(${n.x},${n.y})`);
+
       if (isStart) {
         g.append("circle").attr("r", 21).attr("fill", "none")
           .attr("stroke", C.node).attr("stroke-width", 1).attr("opacity", 0.4);
@@ -271,45 +390,8 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete, round =
           .attr("stroke", C.gold).attr("stroke-width", 1.5).attr("opacity", 0.5)
           .attr("stroke-dasharray", "4 3");
       }
-           if (isSelectable) {
-        g.append("circle")
-          .attr("r", r + 4)
-          .attr("fill", "none")
-          .attr("stroke", C.gold)
-          .attr("stroke-width", 1.5)
-          .attr("opacity", 0.55)
-          .attr("class", "dij-selectable-ring");
-      }
-
-      g.append("circle").attr("r", r).attr("fill", fill)
-        .attr("opacity", isVisited || isTarget || isCurrent ? 1 : 0.75).attr("filter", filter);
-      g.append("circle").attr("r", r - 4).attr("fill", C.panel).attr("opacity", 0.55);
-      g.append("text")
-        .attr("text-anchor", "middle").attr("dominant-baseline", "central")
-        .attr("fill", isTarget ? C.gold : isVisited ? C.teal : C.textPrimary)
-        .attr("font-size", "13px").attr("font-weight", "600")
-        .attr("font-family", "JetBrains Mono, monospace").attr("pointer-events", "none")
-        .text(n.label);
-
-      // Invisible larger hit-area for easier clicking/tapping
       if (isSelectable) {
         g.append("circle")
-          .attr("r", 26)
-          .attr("fill", "transparent")
-          .attr("cursor", "pointer")
-          .on("click", () => handlePick(n.id))
-          .on("mouseenter", function () {
-            d3.select(this.parentNode as Element).select(".dij-selectable-ring")
-              .transition().duration(150).attr("r", r + 7).attr("opacity", 0.9);
-          })
-          .on("mouseleave", function () {
-            d3.select(this.parentNode as Element).select(".dij-selectable-ring")
-              .transition().duration(150).attr("r", r + 4).attr("opacity", 0.55);
-          });
-      }
-
-          if (isSelectable) {
-        g.append("circle")
           .attr("r", r + 4)
           .attr("fill", "none")
           .attr("stroke", C.gold)
@@ -328,7 +410,6 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete, round =
         .attr("font-family", "JetBrains Mono, monospace").attr("pointer-events", "none")
         .text(n.label);
 
-      // Invisible larger hit-area for easier clicking/tapping
       if (isSelectable) {
         g.append("circle")
           .attr("r", 26)
@@ -362,6 +443,7 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete, round =
   }, [game, flashEdge, graph, laidOutNodes, adjacency, handlePick]);
 
   const weightTo = (neighborId: string): number => {
+    if (!graph || !game) return 0;
     const e = graph.edges.find(
       (ed) => (ed.source === game.currentNode && ed.target === neighborId) ||
               (ed.target === game.currentNode && ed.source === neighborId)
@@ -369,7 +451,30 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete, round =
     return e?.weight ?? 0;
   };
 
-  // ── Win overlay (suppressed when shell is driving round transitions) ─
+  // ── Guards ───────────────────────────────────────────────────────
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
+        <p className="text-sm text-error">{loadError}</p>
+        <Button variant="secondary" onClick={() => window.location.reload()}>Retry</Button>
+      </div>
+    );
+  }
+
+  if (!graph || !game) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <motion.div
+          animate={{ opacity: [0.4, 1, 0.4] }}
+          transition={{ repeat: Infinity, duration: 1.4 }}
+          className="font-mono text-sm text-textMuted"
+        >
+          Loading graph…
+        </motion.div>
+      </div>
+    );
+  }
+
   if (game.won && !onRoundComplete) {
     return (
       <AnimatePresence>
@@ -432,7 +537,7 @@ export default function DijkstraBoard({ onWin, onReset, onRoundComplete, round =
               <p className="text-xs uppercase tracking-widest text-textMuted mb-1">Current node</p>
               <span className="font-mono text-3xl font-bold text-node">{labelOf(game.currentNode)}</span>
             </div>
-                        <div>
+            <div>
               <p className="text-xs uppercase tracking-widest text-textMuted mb-2">Available moves</p>
               <p className="text-[11px] text-textMuted mb-2 italic">Click a glowing node on the graph to move.</p>
               {neighbors.length === 0 ? (

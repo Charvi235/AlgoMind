@@ -20,6 +20,7 @@ import { Box } from "lucide-react";
 import { gameRegistry, isGameType, type GameType } from "../config/gameRegistry";
 import { gameIconMap } from "../config/gameIconMap";
 import type { RoundCompletePayload } from "../types/session";
+import { socket } from "../lib/socket"; 
 
 // ─── Board component map ───────────────────────────────────────────────────────
 // Lazily import each board. We use a plain object lookup so the shell never
@@ -77,16 +78,8 @@ export interface GameSessionShellProps {
   onSessionEnd:  (stats: SessionEndStats) => void;
 }
 
-// ─── Opponent mock score ───────────────────────────────────────────────────────
-// TODO: Replace this entire mock with real Socket.io event handling.
-//   socket.on("opponent-score-update", ({ score }) => setOpponentScore(score))
-// The opponent score should be received via the live Socket.io connection,
-// not incremented locally.
-const MOCK_OPPONENT_TICK_MS  = 4500; // roughly every 4.5 s opponent "scores"
-const MOCK_OPPONENT_GAIN_MIN = 1;
-const MOCK_OPPONENT_GAIN_MAX = 3;
 
-// ─── Helpers ───────────────────────────────────────────────────────────────────
+
 const fmt2 = (n: number) => String(n).padStart(2, "0");
 const formatCountdown = (s: number) => `${fmt2(Math.floor(s / 60))}:${fmt2(s % 60)}`;
 
@@ -97,6 +90,7 @@ export default function GameSessionShell({
   opponentLabel = "Opponent",
   onSessionEnd,
 }: GameSessionShellProps) {
+  
   // ── Validate gameType ──────────────────────────────────────────────────────
   if (!isGameType(gameType)) {
     return (
@@ -158,30 +152,33 @@ export default function GameSessionShell({
     return () => clearInterval(id);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Opponent mock score ticker (TODO: replace with socket) ────────────────
+   // ── Opponent live score (real Socket.io events) ──────────────────
   useEffect(() => {
     if (mode !== "live") return;
-    const id = setInterval(() => {
-      // TODO: REMOVE this mock and replace with:
-      //   socket.on("opponent-score-update", ({ score }) => setOpponentScore(score))
-      setOpponentScore((s) =>
-        s + MOCK_OPPONENT_GAIN_MIN +
-        Math.floor(Math.random() * (MOCK_OPPONENT_GAIN_MAX - MOCK_OPPONENT_GAIN_MIN + 1))
-      );
-    }, MOCK_OPPONENT_TICK_MS);
-    return () => clearInterval(id);
+    const handler = ({ score }: { score: number }) => setOpponentScore(score);
+    socket.on("opponent_progress", handler);
+    return () => { socket.off("opponent_progress", handler); };
   }, [mode]);
-
   // ── Round-complete callback (called by the active Board) ──────────────────
-  const handleRoundComplete = useCallback((payload: RoundCompletePayload) => {
+   const handleRoundComplete = useCallback((payload: RoundCompletePayload) => {
     setCorrectTotal((c) => c + payload.correctActions);
     setTotalActions((t) => t + payload.totalActions);
     setPlayerScore((s) => s + payload.correctActions * 10);
-    // Brief pause so the player sees their last action, then advance round
-    setTimeout(() => {
-      setRound((r) => r + 1);
-      setBoardKey((k) => k + 1); // remount Board with fresh state
-    }, 800);
+
+    // Solo mode: shell drives round progression by remounting the Board.
+    // Live mode: the SERVER pushes the next round via Socket.io directly
+    // to the Board (see onRoundChange below) — remounting here would
+    // tear down the Board's socket listeners at the wrong moment.
+    if (mode === "solo") {
+      setTimeout(() => {
+        setRound((r) => r + 1);
+        setBoardKey((k) => k + 1);
+      }, 800);
+    }
+  }, [mode]);
+
+  const handleLiveRoundChange = useCallback((serverRound: number) => {
+    setRound(serverRound);
   }, []);
 
   // ── Timer colour ──────────────────────────────────────────────────────────
@@ -280,12 +277,14 @@ export default function GameSessionShell({
         boardKey changes on each new round, forcing a full unmount + remount
         of the Board so it starts fresh. No game-specific reset logic needed.
       */}
-      {timeLeft > 0 ? (
+     {timeLeft > 0 ? (
         <Board
-  key={boardKey}
-  round={round}
-  onRoundComplete={handleRoundComplete}
-/>
+          key={boardKey}
+          round={round}
+          mode={mode}
+          onRoundComplete={handleRoundComplete}
+          onRoundChange={mode === "live" ? handleLiveRoundChange : undefined}
+        />
       ) : (
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
