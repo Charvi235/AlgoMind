@@ -7,6 +7,7 @@ import { Server as SocketIOServer } from "socket.io";
 import { connectDB } from "./config/db";
 import { errorHandler } from "./middleware/errorHandler";
 import dijkstraRoutes from "./routes/dijkstraRoutes";
+import sessionRoutes from "./routes/sessionRoutes";
 import { registerSocketHandlers } from "./sockets/socketHandlers";
 
 dotenv.config();
@@ -18,17 +19,15 @@ const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
 app.use(express.json());
 
-// ─── Health check ──────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 app.use("/api/games/dijkstra", dijkstraRoutes);
 app.use("/api/auth", authRoutes);
-import sessionRoutes from "./routes/sessionRoutes";
-// ─── Error handler (must be last) ──────────────────────────────
+app.use("/api/sessions", sessionRoutes);
+
 app.use(errorHandler);
 
-// ─── HTTP + Socket.io server ───────────────────────────────────
 const server = http.createServer(app);
 export const io = new SocketIOServer(server, {
   cors: { origin: CLIENT_URL, credentials: true },

@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
+import { socket } from "../lib/socket";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import Card from "../components/ui/Card";
@@ -78,33 +79,28 @@ export default function JoinRoomScreen({ initialCode: propCode }: JoinRoomScreen
   const GameIcon = entry ? (gameIconMap[entry.iconName] ?? null) : null;
 
   // ── Core join logic (exported-ish so JoinRedirect can trigger it) ──────────
-  const handleJoin = useCallback(async (codeToJoin: string) => {
+  const handleJoin = useCallback((codeToJoin: string) => {
     const trimmed = codeToJoin.trim().toUpperCase();
     if (trimmed.length !== 6) return;
 
     setCodeError(null);
     setJoining(true);
 
-    // TODO: REPLACE this mock with a real API call:
-    //   try {
-    //     const { data } = await axios.post("/api/rooms/join", { code: trimmed });
-    //     navigate(`/game/${data.gameType}/match/${data.roomId}`);
-    //   } catch (err) {
-    //     setCodeError("Room not found or has expired. Check the code and try again.");
-    //   } finally {
-    //     setJoining(false);
-    //   }
+    socket.connect();
+    socket.emit("join_room", { code: trimmed });
 
-    // Mock: accept any 6-char code and navigate to stub match
-    // The `gameType` in the URL may be undefined when arriving via /join/:roomCode,
-    // so fall back to a placeholder segment — the real API response will supply the type.
-    await new Promise((r) => setTimeout(r, 600)); // simulate network latency
-    // TODO: replace "mock-room-id" with the real roomId from the API response
-    const resolvedGameType = isGameType(gameType) ? gameType : "dijkstra"; // TODO: get from API
-    navigate(`/game/${resolvedGameType}/match/mock-room-id`);
-    setJoining(false);
+    socket.once("matched", ({ roomId }: { roomId: string }) => {
+      const resolvedGameType = isGameType(gameType) ? gameType : "dijkstra";
+      setJoining(false);
+      navigate(`/game/${resolvedGameType}/match/${roomId}`);
+    });
+
+    socket.once("join_room_error", ({ message }: { message: string }) => {
+      setJoining(false);
+      setCodeError(message);
+    });
   }, [gameType, navigate]);
-
+  
   // Focus input on mount
   useEffect(() => {
     if (!autoSubmit) inputRef.current?.focus();
