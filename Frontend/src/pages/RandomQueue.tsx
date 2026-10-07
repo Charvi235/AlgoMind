@@ -21,6 +21,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { socket } from "../lib/socket";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft } from "lucide-react";
 import Card from "../components/ui/Card";
@@ -75,23 +76,21 @@ export default function RandomQueue() {
     navigate(`/game/${gameType}/friends`);
   };
 
-  // ── Mock matchmaking ─────────────────────────────────────────────────────
-  useEffect(() => {
-    // TODO: REPLACE THIS ENTIRE BLOCK with a real Socket.io flow:
-    //   socket.emit("join-queue", { gameType });
-    //   socket.on("matched", ({ roomId }) => navigate(`/game/${gameType}/match/${roomId}`));
-    timerRef.current = setTimeout(() => {
-      if (!cancelled) {
-        // TODO: replace "mock-room-id" with the real roomId from the socket "matched" event
-        navigate(`/game/${gameType}/match/mock-room-id`);
-      }
-    }, MOCK_MATCH_DELAY_MS);
+ useEffect(() => {
+  if (!gameType) return;
 
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      // TODO: socket.off("matched"); socket.emit("leave-queue", { gameType });
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  socket.connect();
+  socket.emit("join_queue", { gameType });
+
+  socket.on("matched", ({ roomId }: { roomId: string }) => {
+    navigate(`/game/${gameType}/match/${roomId}`);
+  });
+
+  return () => {
+    socket.emit("cancel_queue", { gameType });
+    socket.off("matched");
+  };
+}, [gameType, navigate]);
 
   return (
     <motion.div
