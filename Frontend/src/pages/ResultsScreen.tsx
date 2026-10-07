@@ -11,6 +11,10 @@
  *              bordered in gold with "You won!" / "You lost" / "It's a tie".
  */
 
+
+
+import { useEffect } from "react";
+import { getToken } from "../lib/auth";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Trophy, RotateCcw, LayoutDashboard, Target, CheckCircle2, Zap } from "lucide-react";
@@ -40,6 +44,7 @@ function StatRow({ icon: Icon, label, value, accent = "text-textPrimary" }: {
   value:   string;
   accent?: string;
 }) {
+
   return (
     <div className="flex items-center justify-between gap-3 py-2 border-b border-panelBorder last:border-0">
       <div className="flex items-center gap-2 text-textMuted">
@@ -163,6 +168,25 @@ export default function ResultsScreen() {
   const location     = useLocation();
   const stats        = location.state as SessionStats | null;
 
+    // Save solo session results server-side (guests silently skipped —
+  // live match results are already saved server-side in socketHandlers.ts)
+  useEffect(() => {
+    if (!stats || stats.mode !== "solo") return;
+    const token = getToken();
+    if (!token) return; // guest — not logged in, skip saving
+
+    const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
+    fetch(`${API_BASE}/api/sessions/solo`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ correctCount: stats.player.correctCount }),
+    }).catch(() => {
+      // Non-critical — results screen still shows even if save fails
+    });
+  }, [stats]);
   // Guard: no stats in state (e.g. navigated directly) → redirect to mode select
   if (!stats || !isGameType(gameType ?? "")) {
     return (
