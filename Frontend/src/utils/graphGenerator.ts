@@ -185,3 +185,139 @@ export function generateGraph(round: number): GeneratedGraph {
 
   return { nodes: labeled, edges, start, target };
 }
+function countPaths(
+  current: string,
+  target: string,
+  adj: Map<string, string[]>,
+  visited: Set<string>,
+  path: string[],
+  paths: string[][]
+) {
+  if (current === target) {
+    paths.push([...path]);
+    return;
+  }
+
+  for (const next of adj.get(current) ?? []) {
+    if (visited.has(next)) continue;
+
+    visited.add(next);
+    path.push(next);
+
+    countPaths(next, target, adj, visited, path, paths);
+
+    path.pop();
+    visited.delete(next);
+  }
+}
+function getPathWeight(
+  path: string[],
+  edges: SimpleEdge[]
+): number {
+  let total = 0;
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const edge = edges.find(
+      (e) =>
+        (e.source === path[i] && e.target === path[i + 1]) ||
+        (e.target === path[i] && e.source === path[i + 1])
+    );
+
+    if (!edge) return Infinity;
+
+    total += edge.weight;
+  }
+
+  return total;
+}
+export function generateFloydWarshallGraph(): GeneratedGraph {
+  while (true) {
+    const nodeCount = randomInt(5,6 );
+
+    const { nodes, edges } = generateConnectedGraph(
+      nodeCount,
+      randomInt(4, 6)
+    );
+
+    const adj = buildAdjacencyIds(edges);
+
+    // Randomly select S
+    const start = nodes[randomInt(0, nodes.length - 1)].id;
+
+    // Find nodes at least 2 hops away
+    const distances = bfsDistance(start, adj);
+
+    const possibleTargets = nodes.filter(
+      (n) =>
+        n.id !== start &&
+        (distances.get(n.id) ?? 0) >= 2
+    );
+
+    if (possibleTargets.length === 0) continue;
+
+    const target =
+      possibleTargets[
+        randomInt(0, possibleTargets.length - 1)
+      ].id;
+
+    // Find all S → T paths
+    const paths: string[][] = [];
+
+    countPaths(
+      start,
+      target,
+      adj,
+      new Set([start]),
+      [start],
+      paths
+    );
+
+    if (paths.length < 3) continue;
+
+    // Calculate weights
+    const pathWeights = paths.map((path) => ({
+      path,
+      weight: getPathWeight(path, edges),
+    }));
+
+    // We only care about meaningful paths
+    const uniqueWeights = new Set(
+      pathWeights.map((p) => p.weight)
+    );
+
+    if (uniqueWeights.size < 3) continue;
+
+    // Require different hop counts
+    const hopCounts = new Set(
+      paths.map((path) => path.length - 1)
+    );
+
+    if (hopCounts.size < 2) continue;
+
+    // Label nodes
+    const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let letterIndex = 0;
+
+    const labeledNodes = nodes.map((node) => {
+      if (node.id === start) {
+        return { id: node.id, label: "S" };
+      }
+
+      if (node.id === target) {
+        return { id: node.id, label: "T" };
+      }
+
+      return {
+        id: node.id,
+        label: letters[letterIndex++],
+      };
+    });
+
+    return {
+      nodes: labeledNodes,
+      edges,
+      start,
+      target,
+    };
+  }
+}
