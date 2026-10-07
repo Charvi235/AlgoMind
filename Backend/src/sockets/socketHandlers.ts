@@ -26,9 +26,9 @@ import {
   dijkstraShortestPath,
   isValidNextStep,
 } from "../utils/graphGenerator";
-import User from "../models/User";
-import MatchResult from "../models/MatchResult";
-import { recordActivityAndXP } from "../utils/activityTracker";
+//import User from "../models/User";
+//import MatchResult from "../models/MatchResult";
+//import { recordActivityAndXP } from "../utils/activityTracker";
 
 const MATCH_SECONDS = 60;
 const DISCONNECT_GRACE_MS = 15000;
@@ -123,21 +123,21 @@ export function registerSocketHandlers(io: Server) {
         };
       });
 
-      try {
-        await MatchResult.create({
-          gameType: room.gameType,
-          roomId: room.roomId,
-          players: matchPlayers,
-          startedAt: new Date(Date.now() - MATCH_SECONDS * 1000),
-          endedAt: new Date(),
-        });
+      // try {
+      //   await MatchResult.create({
+      //     gameType: room.gameType,
+      //     roomId: room.roomId,
+      //     players: matchPlayers,
+      //     startedAt: new Date(Date.now() - MATCH_SECONDS * 1000),
+      //     endedAt: new Date(),
+      //   });
 
-        for (const mp of matchPlayers) {
-          await recordActivityAndXP(mp.user_id as unknown as string, mp.xpEarned);
-        }
-      } catch (err) {
-        console.error("Failed to save match result:", err);
-      }
+      //   // for (const mp of matchPlayers) {
+      //   //   await recordActivityAndXP(mp.user_id as unknown as string, mp.xpEarned);
+      //   // }
+      // } catch (err) {
+      //   console.error("Failed to save match result:", err);
+      // }
     }
 
     removeRoom(room.roomId);
@@ -147,44 +147,44 @@ export function registerSocketHandlers(io: Server) {
     const userId = socket.data.userId as string | undefined;
 
     // ── Random matchmaking ──────────────────────────────────────
-    socket.on("join_queue", async ({ gameType }: { gameType: string }) => {
-      const username = userId ? (await User.findById(userId))?.username : undefined;
+    // socket.on("join_queue", async ({ gameType }: { gameType: string }) => {
+    //   const username = userId ? (await User.findById(userId))?.username : undefined;
 
-      const room = joinRandomQueue(gameType, socket.id, userId, username);
-      if (room) {
-        for (const p of room.players) io.sockets.sockets.get(p.socketId)?.join(room.roomId);
-        io.to(room.roomId).emit("matched", { roomId: room.roomId });
-        startMatch(io, room);
-      } else {
-        socket.emit("queue_joined");
-      }
-    });
+    //   const room = joinRandomQueue(gameType, socket.id, userId, username);
+    //   if (room) {
+    //     for (const p of room.players) io.sockets.sockets.get(p.socketId)?.join(room.roomId);
+    //     io.to(room.roomId).emit("matched", { roomId: room.roomId });
+    //     startMatch(io, room);
+    //   } else {
+    //     socket.emit("queue_joined");
+    //   }
+    // });
 
-    socket.on("cancel_queue", ({ gameType }: { gameType: string }) => {
-      leaveQueue(gameType, socket.id);
-    });
+    // socket.on("cancel_queue", ({ gameType }: { gameType: string }) => {
+    //   leaveQueue(gameType, socket.id);
+    // });
 
     // ── Invite code flow ────────────────────────────────────────
-    socket.on("create_room", async ({ gameType }: { gameType: string }) => {
-      const username = userId ? (await User.findById(userId))?.username : undefined;
+ //   socket.on("create_room", async ({ gameType }: { gameType: string }) => {
+    //   const username = userId ? (await User.findById(userId))?.username : undefined;
 
-      const room = createRoom(gameType, socket.id, userId, username);
-      socket.join(room.roomId);
-      socket.emit("room_created", { roomId: room.roomId, code: room.code });
-    });
+    //   const room = createRoom(gameType, socket.id, userId, username);
+    //   socket.join(room.roomId);
+    //   socket.emit("room_created", { roomId: room.roomId, code: room.code });
+    // });
 
-    socket.on("join_room", async ({ code }: { code: string }) => {
-      const username = userId ? (await User.findById(userId))?.username : undefined;
+   // socket.on("join_room", async ({ code }: { code: string }) => {
+    //  const username = userId ? (await User.findById(userId))?.username : undefined;
 
-      const room = joinRoomByCode(code, socket.id, userId, username);
-      if (!room) {
-        socket.emit("join_room_error", { message: "Room not found or already full." });
-        return;
-      }
-      socket.join(room.roomId);
-      io.to(room.roomId).emit("matched", { roomId: room.roomId });
-      startMatch(io, room);
-    });
+     // const room = joinRoomByCode(code, socket.id, userId, username);
+     // if (!room) {
+       // socket.emit("join_room_error", { message: "Room not found or already full." });
+        //return;
+      //}
+      //socket.join(room.roomId);
+      //io.to(room.roomId).emit("matched", { roomId: room.roomId });
+      //startMatch(io, room);
+    //});
 
     // ── Reliable round-state fetch (handles race where match_start
     // fires before the client's Board component has mounted) ───────

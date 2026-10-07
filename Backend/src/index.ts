@@ -2,11 +2,12 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import http from "http";
-import authRoutes from "./routes/authRoutes";
+//import authRoutes from "./routes/authRoutes";
 import { Server as SocketIOServer } from "socket.io";
 import { connectDB } from "./config/db";
 import { errorHandler } from "./middleware/errorHandler";
 import dijkstraRoutes from "./routes/dijkstraRoutes";
+import bstRoutes from "./routes/bstRoutes";
 import { registerSocketHandlers } from "./sockets/socketHandlers";
 
 dotenv.config();
@@ -23,8 +24,9 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 app.use("/api/games/dijkstra", dijkstraRoutes);
-app.use("/api/auth", authRoutes);
-import sessionRoutes from "./routes/sessionRoutes";
+app.use("/api/games/bst", bstRoutes); 
+// app.use("/api/auth", authRoutes);
+//import sessionRoutes from "./routes/sessionRoutes";
 // ─── Error handler (must be last) ──────────────────────────────
 app.use(errorHandler);
 
