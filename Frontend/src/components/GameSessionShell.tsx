@@ -1,3 +1,4 @@
+
 /**
  * GameSessionShell.tsx
  *
@@ -29,6 +30,7 @@ import BSTBoard              from "./game-boards/BSTBoard";
 import FloydWarshallBoard    from "./game-boards/FloydWarshallBoard";
 import MissingOperatorBoard  from "./game-boards/MissingOperatorBoard";
 import MathsQuestionsBoard   from "./game-boards/MathsQuestionsBoard";
+import SortingBoard          from "./game-boards/SortingBoard";
 
 type BoardComponent = React.ComponentType<{
   onRoundComplete?: (payload: RoundCompletePayload) => void;
@@ -43,10 +45,16 @@ const BOARD_MAP: Record<GameType, BoardComponent> = {
   "floyd-warshall":   FloydWarshallBoard,
   "missing-operator": MissingOperatorBoard,
   "maths-questions":  MathsQuestionsBoard,
+  "sorting":          SortingBoard,
 };
 
 // ─── Session constants ─────────────────────────────────────────────────────────
-const SESSION_SECONDS = 60;
+const DEFAULT_SESSION_SECONDS = 60;
+
+// Per-game override — add a line here to give any game a different length.
+const SESSION_SECONDS_BY_GAME: Partial<Record<GameType, number>> = {
+  sorting: 120,   // sorting rounds have 4–10 steps, so give players 2 minutes
+};
 
 // ─── Session-end stats ─────────────────────────────────────────────────────────
 export interface SessionEndStats {
@@ -97,7 +105,11 @@ export default function GameSessionShell({
   const Board    = BOARD_MAP[gameType];
 
   // ── Timer ──────────────────────────────────────────────────────────────────
-    const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS);
+
+
+  const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS_BY_GAME[gameType] ?? DEFAULT_SESSION_SECONDS);
+  const timerRunning = useRef(true);
+
 
   // ── Round & score tracking ─────────────────────────────────────────────────
   const [round,        setRound]        = useState(1);

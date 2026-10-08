@@ -7,7 +7,11 @@ import { Server as SocketIOServer } from "socket.io";
 import { connectDB } from "./config/db";
 import { errorHandler } from "./middleware/errorHandler";
 import dijkstraRoutes from "./routes/dijkstraRoutes";
-import sessionRoutes from "./routes/sessionRoutes";
+
+import bstRoutes from "./routes/bstRoutes";
+
+//import sessionRoutes from "./routes/sessionRoutes";
+
 import { registerSocketHandlers } from "./sockets/socketHandlers";
 
 dotenv.config();
@@ -35,8 +39,14 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 app.use("/api/games/dijkstra", dijkstraRoutes);
+
+app.use("/api/games/bst", bstRoutes);
+// app.use("/api/auth", authRoutes);
+//import sessionRoutes from "./routes/sessionRoutes";
+// ─── Error handler (must be last) ──────────────────────────────
+
 app.use("/api/auth", authRoutes);
-app.use("/api/sessions", sessionRoutes);
+//app.use("/api/sessions", sessionRoutes);
 
 app.use(errorHandler);
 
