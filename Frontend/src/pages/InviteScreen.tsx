@@ -5,12 +5,14 @@
  *
  * Creates a room via Socket.io, displays the server-issued code, lets
  * the host copy it or share a link, then waits for a friend to join.
+ * If the host leaves before anyone joins, the room is cancelled on the
+ * server so its code can't be used any more.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, Copy, Share2, Check } from "lucide-react";
+import { ArrowLeft, Copy, Share2, Check, WifiOff } from "lucide-react";
 import { socket } from "../lib/socket";
 import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
@@ -34,46 +36,52 @@ export default function InviteScreen() {
   const { gameType } = useParams<{ gameType: string }>();
   const navigate      = useNavigate();
 
-  const [code, setCode]               = useState<string | null>(null);
+  const [code, setCode]                 = useState<string | null>(null);
   const [copiedTarget, setCopiedTarget] = useState<CopyTarget | null>(null);
+  const [connError, setConnError]       = useState(false);
+  const matchedRef = useRef(false);
 
-  // ── Socket.io: create room, wait for opponent ──────────────────────────
+  // Derived values are computed BEFORE the hooks that use them, and the
+  // early return for an invalid gameType comes AFTER all hooks.
+  const entry     = isGameType(gameType) ? gameRegistry[gameType] : null;
+  const GameIcon  = entry ? gameIconMap[entry.iconName] : undefined;
+  const shareLink = code ? `${window.location.origin}/join/${code}` : "";
+
+  // ── Socket.io: create room (on every connect), wait for opponent ───────
   useEffect(() => {
-    if (!gameType) return;
+    if (!isGameType(gameType)) return;
+    matchedRef.current = false;
 
-    socket.connect();
-    socket.emit("create_room", { gameType });
-
+    const createRoom = () => {
+      setConnError(false);
+      socket.emit("create_room", { gameType });
+    };
     const onRoomCreated = ({ code }: { roomId: string; code: string }) => {
       setCode(code);
     };
     const onMatched = ({ roomId }: { roomId: string }) => {
+      matchedRef.current = true;
       navigate(`/game/${gameType}/match/${roomId}`);
     };
+    const onConnectError = () => setConnError(true);
 
+    socket.on("connect", createRoom);
+    socket.on("connect_error", onConnectError);
     socket.on("room_created", onRoomCreated);
     socket.on("matched", onMatched);
 
+    if (socket.connected) createRoom();
+    else socket.connect();
+
     return () => {
+      // Leaving without a match: cancel the waiting room on the server.
+      if (!matchedRef.current) socket.emit("cancel_room");
+      socket.off("connect", createRoom);
+      socket.off("connect_error", onConnectError);
       socket.off("room_created", onRoomCreated);
       socket.off("matched", onMatched);
     };
   }, [gameType, navigate]);
-
-  if (!isGameType(gameType)) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
-        <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
-        <button onClick={() => navigate("/")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
-          Back to Dashboard
-        </button>
-      </div>
-    );
-  }
-
-  const entry    = gameRegistry[gameType];
-  const GameIcon = gameIconMap[entry.iconName];
-  const shareLink = code ? `${window.location.origin}/join/${code}` : "";
 
   const handleCopy = useCallback(async (target: CopyTarget) => {
     if (!code) return;
@@ -89,10 +97,10 @@ export default function InviteScreen() {
 
   const handleShare = useCallback(async () => {
     if (!code) return;
-    if (navigator.share) {
+    if (typeof navigator !== "undefined" && "share" in navigator) {
       try {
         await navigator.share({
-          title: `Join me in ${entry.title} on AlgoMind!`,
+          title: `Join me in ${entry?.title ?? "AlgoMind"} on AlgoMind!`,
           text:  `Use room code ${code} or click the link to join my game.`,
           url:   shareLink,
         });
@@ -102,10 +110,21 @@ export default function InviteScreen() {
       }
     }
     await handleCopy("link");
-  }, [entry.title, code, shareLink, handleCopy]);
+  }, [entry, code, shareLink, handleCopy]);
+
+  if (!entry) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
+        <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
+        <button onClick={() => navigate("/")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
+          Back to Dashboard
+        </button>
+      </div>
+    );
+  }
 
   const handleCancel = () => {
-    navigate(`/game/${gameType}/friends`);
+    navigate(`/game/${gameType}/friends`); // effect cleanup emits cancel_room
   };
 
   return (
@@ -227,7 +246,18 @@ export default function InviteScreen() {
 
             <div className="flex flex-col gap-1">
               <p className="text-sm font-medium text-textPrimary">Waiting for your friend to join…</p>
-              <p className="text-xs text-textMuted">Share the code or link above</p>
+              {connError ? (
+                <div
+                  role="alert"
+                  className="flex items-center justify-center gap-2 text-xs font-medium"
+                  style={{ color: "#FF6B8A" }}
+                >
+                  <WifiOff size={14} aria-hidden="true" />
+                  Can't reach the server. Retrying…
+                </div>
+              ) : (
+                <p className="text-xs text-textMuted">Share the code or link above</p>
+              )}
             </div>
           </div>
 
