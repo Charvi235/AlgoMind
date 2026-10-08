@@ -28,7 +28,7 @@ app.get("/api/health", (_req, res) => {
 });
 app.use("/api/games/dijkstra", dijkstraRoutes);
 
-app.use("/api/games/bst", bstRoutes); 
+app.use("/api/games/bst", bstRoutes);
 // app.use("/api/auth", authRoutes);
 //import sessionRoutes from "./routes/sessionRoutes";
 // ─── Error handler (must be last) ──────────────────────────────
