@@ -9,6 +9,15 @@
 
 import type { Server, Socket } from "socket.io";
 import jwt from "jsonwebtoken";
+// Replace line 12:
+
+
+import MatchResult, { IMatchResult } from "../models/MatchResult";
+
+// Replace line 14:
+import { recordActivityAndXP } from "../utils/activityTracker";
+// Update the relative path to where your MatchResult type lives
+// Update relative path to match your file structure
 import {
   createRoom,
   joinRoomByCode,
