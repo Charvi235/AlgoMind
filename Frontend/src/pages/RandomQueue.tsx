@@ -19,7 +19,7 @@
  * ────────────────────────────────────────────────────────────────────────────
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { socket } from "../lib/socket";
 import { motion, AnimatePresence } from "framer-motion";
@@ -45,15 +45,11 @@ const stagger = {
 // Three concentric rings expand outward and fade, giving a "sonar" feel.
 const RING_COUNT = 3;
 
-// ─── Mock match delay (ms) ───────────────────────────────────────────────────
-const MOCK_MATCH_DELAY_MS = 3000;
-
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function RandomQueue() {
   const { gameType } = useParams<{ gameType: string }>();
   const navigate     = useNavigate();
   const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [cancelled, setCancelled] = useState(false);
 
   if (!isGameType(gameType)) {
     return (
@@ -70,7 +66,6 @@ export default function RandomQueue() {
   const GameIcon = gameIconMap[entry.iconName];
 
   const handleCancel = () => {
-    setCancelled(true);
     if (timerRef.current) clearTimeout(timerRef.current);
     // TODO: emit socket.emit("leave-queue", { gameType }) here
     navigate(`/game/${gameType}/friends`);

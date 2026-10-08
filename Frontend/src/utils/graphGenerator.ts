@@ -175,6 +175,7 @@ export function generateGraph(round: number): GeneratedGraph {
       edges.push({ source: start, target: extra, weight: randomInt(MIN_WEIGHT, MAX_WEIGHT) });
     }
   }
+
   const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
   let letterIdx = 0;
   const labeled: SimpleNode[] = nodes.map((n) => {
@@ -184,4 +185,84 @@ export function generateGraph(round: number): GeneratedGraph {
   });
 
   return { nodes: labeled, edges, start, target };
+}
+// ─── Floyd-Warshall round generation ──────────────────────────────
+// Reuses generateConnectedGraph() above — no graph-generation logic
+// duplicated. Produces the full sequence of (k, i, j) UPDATE steps
+// only (cells where no improvement happens are skipped entirely, per
+// the design plan — DP should only involve the player when a better
+// path is actually found).
+
+export interface FWStep {
+  k: number;
+  i: number;
+  j: number;
+  newValue: number;
+}
+
+export interface FWRound {
+  labels: string[];
+  initialMatrix: number[][]; // Infinity = no direct edge, 0 = diagonal
+  steps: FWStep[];
+}
+
+export function fwDifficultyForRound(round: number) {
+  const nodeCount = Math.min(4 + Math.floor(round / 2), 6);
+  const extraEdges = Math.min(1 + Math.floor(round / 3), 3);
+  return { nodeCount, extraEdges };
+}
+
+function computeFWSteps(matrix: number[][]): FWStep[] {
+  const n = matrix.length;
+  const working = matrix.map((row) => [...row]);
+  const steps: FWStep[] = [];
+  for (let k = 0; k < n; k++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const through = working[i][k] + working[k][j];
+        if (through < working[i][j]) {
+          working[i][j] = through;
+          steps.push({ k, i, j, newValue: through });
+        }
+      }
+    }
+  }
+  return steps;
+}
+
+/**
+ * Generates a round-appropriate graph as an adjacency matrix, plus the
+ * ordered list of cells the Floyd-Warshall algorithm actually updates.
+ * Retries with a fresh random graph if a tiny graph happens to need no
+ * updates at all (rare, but possible with very few nodes).
+ */
+export function generateFloydWarshallRound(round: number): FWRound {
+  const { nodeCount, extraEdges } = fwDifficultyForRound(round);
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
+  let best: { matrix: number[][]; steps: FWStep[] } | null = null;
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const { nodes, edges } = generateConnectedGraph(nodeCount, extraEdges);
+    const idx = new Map(nodes.map((n, i) => [n.id, i]));
+    const n = nodes.length;
+    const matrix: number[][] = Array.from({ length: n }, (_, i) =>
+      Array.from({ length: n }, (_, j) => (i === j ? 0 : Infinity))
+    );
+    for (const e of edges) {
+      const a = idx.get(e.source)!;
+      const b = idx.get(e.target)!;
+      matrix[a][b] = Math.min(matrix[a][b], e.weight);
+      matrix[b][a] = Math.min(matrix[b][a], e.weight);
+    }
+    const steps = computeFWSteps(matrix);
+    if (!best || steps.length > best.steps.length) best = { matrix, steps };
+    if (steps.length >= 3) break;
+  }
+
+  return {
+    labels: letters.slice(0, nodeCount),
+    initialMatrix: best!.matrix,
+    steps: best!.steps,
+  };
 }
