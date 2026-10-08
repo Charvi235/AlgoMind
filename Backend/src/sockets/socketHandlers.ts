@@ -201,6 +201,15 @@ export function registerSocketHandlers(io: Server) {
       startMatch(io, room);
     });
 
+        // Host leaves the invite screen before anyone joined: drop the empty
+    // room so its code can't be used to "join" a host who already left.
+    socket.on("cancel_room", () => {
+      const room = getRoomBySocket(socket.id);
+      if (room && room.status === "waiting") {
+        socket.leave(room.roomId);
+        removeRoom(room.roomId);
+      }
+    });
     // ── Reliable round-state fetch (handles race where match_start
     // fires before the client's Board component has mounted) ───────
     socket.on("request_round_state", () => {

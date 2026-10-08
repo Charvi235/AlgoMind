@@ -12,6 +12,18 @@ import { registerSocketHandlers } from "./sockets/socketHandlers";
 
 dotenv.config();
 
+// Fail fast: a missing secret must crash the deploy loudly, never
+// silently turn every user into a guest or break auth.
+const REQUIRED_ENV = ["MONGODB_URI", "JWT_SECRET"];
+for (const name of REQUIRED_ENV) {
+  if (!process.env[name]) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+}
+if (process.env.NODE_ENV === "production" && !process.env.CLIENT_URL) {
+  throw new Error("CLIENT_URL must be set in production, otherwise CORS rejects the real frontend");
+}
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
