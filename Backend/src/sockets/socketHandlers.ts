@@ -9,6 +9,15 @@
 
 import type { Server, Socket } from "socket.io";
 import jwt from "jsonwebtoken";
+// Replace line 12:
+
+
+import MatchResult, { IMatchResult } from "../models/MatchResult";
+
+// Replace line 14:
+import { recordActivityAndXP } from "../utils/activityTracker";
+// Update the relative path to where your MatchResult type lives
+// Update relative path to match your file structure
 import {
   createRoom,
   joinRoomByCode,
@@ -26,9 +35,9 @@ import {
   dijkstraShortestPath,
   isValidNextStep,
 } from "../utils/graphGenerator";
-import User from "../models/User";
-import MatchResult from "../models/MatchResult";
-import { recordActivityAndXP } from "../utils/activityTracker";
+//import User from "../models/User";
+//import MatchResult from "../models/MatchResult";
+//import { recordActivityAndXP } from "../utils/activityTracker";
 
 const MATCH_SECONDS = 60;
 const DISCONNECT_GRACE_MS = 15000;
@@ -87,105 +96,147 @@ export function registerSocketHandlers(io: Server) {
     io.to(room.roomId).emit("round_data", publicRoundPayload(room.round, roundData));
   }
 
-  async function endMatch(io: Server, room: Room) {
-    const [p1, p2] = room.players;
+    async function endMatch(io: Server, room: Room) {
+    // Single source of truth for final stats: used for winner decision,
+    // the match_end payload AND the DB save.
+    // Accuracy = correct steps / all attempts (wrong clicks count).
+    const stats = room.players.map((p) => ({
+      socketId: p.socketId,
+      userId: p.userId,
+      username: p.username ?? null,
+      roundsCompleted: p.correctCount,
+      accuracy: p.attempts > 0 ? Math.round((p.totalActions / p.attempts) * 100) : 0,
+      xp: p.correctCount * 10,
+    }));
+
+    // Winner: more rounds wins; if rounds are equal, higher accuracy wins;
+    // only if both are equal is it a real tie (winnerSocketId stays null).
     let winnerSocketId: string | null = null;
-    if (p1 && p2) {
-      if (p1.correctCount > p2.correctCount) winnerSocketId = p1.socketId;
-      else if (p2.correctCount > p1.correctCount) winnerSocketId = p2.socketId;
-      // else: tie, winnerSocketId stays null
+    const [a, b] = stats;
+    if (a && b) {
+      if (a.roundsCompleted !== b.roundsCompleted) {
+        winnerSocketId = a.roundsCompleted > b.roundsCompleted ? a.socketId : b.socketId;
+      } else if (a.accuracy !== b.accuracy) {
+        winnerSocketId = a.accuracy > b.accuracy ? a.socketId : b.socketId;
+      }
     }
 
-    const results = room.players.map((p) => ({
-      socketId: p.socketId,
-      correctCount: p.correctCount,
-      totalActions: p.totalActions,
-      score: p.score,
-    }));
-    io.to(room.roomId).emit("match_end", { results, winnerSocketId });
+    io.to(room.roomId).emit("match_end", {
+      results: stats.map((s) => ({
+        socketId: s.socketId,
+        username: s.username,
+        roundsCompleted: s.roundsCompleted,
+        accuracy: s.accuracy,
+        xp: s.xp,
+      })),
+      winnerSocketId,
+    });
 
-    // Save results for any player who was logged in — guests are skipped.
-    const loggedInPlayers = room.players.filter((p) => p.userId);
-    if (loggedInPlayers.length > 0) {
-      const matchPlayers = loggedInPlayers.map((p) => {
-        const accuracy = p.totalActions > 0 ? Math.round((p.correctCount / p.totalActions) * 100) : 0;
-        const xpEarned = p.correctCount * 10;
-        const result: "win" | "loss" | "tie" =
-          !winnerSocketId ? "tie" : p.socketId === winnerSocketId ? "win" : "loss";
-        return {
-          user_id: p.userId!,
-          username: p.username ?? "Unknown",
-          correctCount: p.correctCount,
-          totalRounds: p.totalActions,
-          accuracy,
-          xpEarned,
-          result,
-        };
-      });
+    // Remove the room BEFORE the async DB work, so a late disconnect
+    // timer can't trigger a second endMatch and double-save.
+    removeRoom(room.roomId);
 
+
+    const resultFor = (socketId: string): "win" | "loss" | "tie" =>
+      !winnerSocketId ? "tie" : socketId === winnerSocketId ? "win" : "loss";
+
+    const loggedIn = stats.filter((s) => s.userId);
+    if (loggedIn.length > 0) {
       try {
         await MatchResult.create({
           gameType: room.gameType,
           roomId: room.roomId,
-          players: matchPlayers,
+          players: loggedIn.map((s) => ({
+            user_id: s.userId!,
+            username: s.username ?? "Unknown",
+            correctCount: s.roundsCompleted,
+            totalRounds: s.roundsCompleted,
+            accuracy: s.accuracy,
+            xpEarned: s.xp,
+            result: resultFor(s.socketId),
+          })),
           startedAt: new Date(Date.now() - MATCH_SECONDS * 1000),
           endedAt: new Date(),
         });
 
-        for (const mp of matchPlayers) {
-          await recordActivityAndXP(mp.user_id as unknown as string, mp.xpEarned);
+        for (const s of loggedIn) {
+          await recordActivityAndXP(s.userId!, s.xp);
         }
       } catch (err) {
         console.error("Failed to save match result:", err);
       }
-    }
 
-    removeRoom(room.roomId);
+      // try {
+      //   await MatchResult.create({
+      //     gameType: room.gameType,
+      //     roomId: room.roomId,
+      //     players: matchPlayers,
+      //     startedAt: new Date(Date.now() - MATCH_SECONDS * 1000),
+      //     endedAt: new Date(),
+      //   });
+
+      //   // for (const mp of matchPlayers) {
+      //   //   await recordActivityAndXP(mp.user_id as unknown as string, mp.xpEarned);
+      //   // }
+      // } catch (err) {
+      //   console.error("Failed to save match result:", err);
+      // }
+
+    }
   }
 
   io.on("connection", (socket: Socket) => {
     const userId = socket.data.userId as string | undefined;
 
     // ── Random matchmaking ──────────────────────────────────────
-    socket.on("join_queue", async ({ gameType }: { gameType: string }) => {
-      const username = userId ? (await User.findById(userId))?.username : undefined;
+    // socket.on("join_queue", async ({ gameType }: { gameType: string }) => {
+    //   const username = userId ? (await User.findById(userId))?.username : undefined;
 
-      const room = joinRandomQueue(gameType, socket.id, userId, username);
-      if (room) {
-        for (const p of room.players) io.sockets.sockets.get(p.socketId)?.join(room.roomId);
-        io.to(room.roomId).emit("matched", { roomId: room.roomId });
-        startMatch(io, room);
-      } else {
-        socket.emit("queue_joined");
-      }
-    });
+    //   const room = joinRandomQueue(gameType, socket.id, userId, username);
+    //   if (room) {
+    //     for (const p of room.players) io.sockets.sockets.get(p.socketId)?.join(room.roomId);
+    //     io.to(room.roomId).emit("matched", { roomId: room.roomId });
+    //     startMatch(io, room);
+    //   } else {
+    //     socket.emit("queue_joined");
+    //   }
+    // });
 
-    socket.on("cancel_queue", ({ gameType }: { gameType: string }) => {
-      leaveQueue(gameType, socket.id);
-    });
+    // socket.on("cancel_queue", ({ gameType }: { gameType: string }) => {
+    //   leaveQueue(gameType, socket.id);
+    // });
 
     // ── Invite code flow ────────────────────────────────────────
-    socket.on("create_room", async ({ gameType }: { gameType: string }) => {
-      const username = userId ? (await User.findById(userId))?.username : undefined;
+ //   socket.on("create_room", async ({ gameType }: { gameType: string }) => {
+    //   const username = userId ? (await User.findById(userId))?.username : undefined;
 
-      const room = createRoom(gameType, socket.id, userId, username);
-      socket.join(room.roomId);
-      socket.emit("room_created", { roomId: room.roomId, code: room.code });
-    });
+    //   const room = createRoom(gameType, socket.id, userId, username);
+    //   socket.join(room.roomId);
+    //   socket.emit("room_created", { roomId: room.roomId, code: room.code });
+    // });
 
-    socket.on("join_room", async ({ code }: { code: string }) => {
-      const username = userId ? (await User.findById(userId))?.username : undefined;
+   // socket.on("join_room", async ({ code }: { code: string }) => {
+    //  const username = userId ? (await User.findById(userId))?.username : undefined;
 
-      const room = joinRoomByCode(code, socket.id, userId, username);
-      if (!room) {
-        socket.emit("join_room_error", { message: "Room not found or already full." });
-        return;
+     // const room = joinRoomByCode(code, socket.id, userId, username);
+     // if (!room) {
+       // socket.emit("join_room_error", { message: "Room not found or already full." });
+        //return;
+      //}
+      //socket.join(room.roomId);
+      //io.to(room.roomId).emit("matched", { roomId: room.roomId });
+      //startMatch(io, room);
+    //});
+
+        // Host leaves the invite screen before anyone joined: drop the empty
+    // room so its code can't be used to "join" a host who already left.
+    socket.on("cancel_room", () => {
+      const room = getRoomBySocket(socket.id);
+      if (room && room.status === "waiting") {
+        socket.leave(room.roomId);
+        removeRoom(room.roomId);
       }
-      socket.join(room.roomId);
-      io.to(room.roomId).emit("matched", { roomId: room.roomId });
-      startMatch(io, room);
     });
-
     // ── Reliable round-state fetch (handles race where match_start
     // fires before the client's Board component has mounted) ───────
     socket.on("request_round_state", () => {
@@ -211,6 +262,7 @@ export function registerSocketHandlers(io: Server) {
         const data = room.currentRoundData as DijkstraRoundData;
         const player = getPlayer(room, socket.id);
         if (!player) return;
+        player.attempts += 1;
 
         const correct = isValidNextStep(data.shortestPath, currentNode, chosenNode);
         const isComplete = correct && chosenNode === data.target;

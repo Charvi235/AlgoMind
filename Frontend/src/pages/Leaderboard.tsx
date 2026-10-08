@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { motion } from "framer-motion";
 import { Trophy, Medal, Award, TrendingUp, Flame } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -35,19 +34,6 @@ const MOCK_USERS: LeaderboardUser[] = [
   { rank: 15, name: "Mei L.",      score: 2990, streak:  2, accuracy: 79 },
 ];
 
-// ─── Loading skeleton ─────────────────────────────────────────────────────────
-// TODO: show this while /api/leaderboard is fetching
-function SkeletonRow() {
-  return (
-    <div className="flex items-center gap-4 px-4 py-3 animate-pulse">
-      <div className="w-6 h-4 rounded bg-panelBorder/60 shrink-0" />
-      <div className="h-8 w-8 rounded-full bg-panelBorder/60 shrink-0" />
-      <div className="flex-1 h-4 rounded bg-panelBorder/60" />
-      <div className="w-16 h-4 rounded bg-panelBorder/60" />
-    </div>
-  );
-}
-
 // ─── Rank badge ───────────────────────────────────────────────────────────────
 function RankBadge({ rank }: { rank: number }) {
   if (rank === 1) return <Trophy   size={16} className="text-gold"     aria-label="1st place" />;
@@ -69,11 +55,8 @@ const stagger = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function Leaderboard() {
-  // TODO: replace with real loading state driven by API fetch
-  const [isLoading] = useState(false);
-
-  const top3    = MOCK_USERS.slice(0, 3);
-  const rest    = MOCK_USERS.slice(3);
+  const top3 = MOCK_USERS.slice(0, 3);
+  const rest = MOCK_USERS.slice(3);
 
   return (
     <motion.div
@@ -96,15 +79,7 @@ export default function Leaderboard() {
         className="grid grid-cols-1 gap-4 sm:grid-cols-3"
         aria-label="Top 3 players"
       >
-        {isLoading
-          ? [1, 2, 3].map((i) => (
-              <Card key={i} className="animate-pulse !p-5">
-                <div className="h-10 w-10 rounded-full bg-panelBorder/60 mb-3" />
-                <div className="h-4 w-24 rounded bg-panelBorder/60 mb-2" />
-                <div className="h-6 w-16 rounded bg-panelBorder/60" />
-              </Card>
-            ))
-          : top3.map((user) => {
+        {top3.map((user) => {
               const isGold   = user.rank === 1;
               const isSilver = user.rank === 2;
               return (
@@ -169,9 +144,7 @@ export default function Leaderboard() {
             initial="hidden"
             animate="visible"
           >
-            {isLoading
-              ? Array.from({ length: 8 }, (_, i) => <SkeletonRow key={i} />)
-              : rest.map((user) => (
+            {rest.map((user) => (
                   <motion.li
                     key={user.rank}
                     variants={fadeUp}

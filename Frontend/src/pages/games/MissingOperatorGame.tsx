@@ -26,18 +26,6 @@ type Operator = "+" | "−" | "×" | "÷";
 
 const OPERATORS: Operator[] = ["+", "−", "×", "÷"];
 
-// Maps display symbol → JS evaluable operator (used when wiring backend validation)
-// TODO: use OP_MAP when sending operator to /api/games/missing-operator/answer
-const OP_MAP : Record<Operator, string> = {
-  "+": "+",
-  "−": "-",
-  "×": "*",
-  "÷": "/",
-};
-
-// ─── Question bank ────────────────────────────────────────────────────────────
-// TODO: replace with GET /api/games/missing-operator/questions
-//       Response shape: { id: string, a: number, b: number, result: number, operator: Operator }[]
 
 interface Question {
   id:       string;

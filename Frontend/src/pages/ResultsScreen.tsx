@@ -188,7 +188,7 @@ export default function ResultsScreen() {
     });
   }, [stats]);
   // Guard: no stats in state (e.g. navigated directly) → redirect to mode select
-  if (!stats || !isGameType(gameType ?? "")) {
+  if (!stats || !isGameType(gameType)) {
     return (
       <div className="flex flex-col items-center justify-center gap-6 py-24 text-center">
         <p className="text-textMuted text-sm">No session data found.</p>
@@ -199,9 +199,8 @@ export default function ResultsScreen() {
     );
   }
 
-  const resolvedGameType = gameType!;
-  const entry            = gameRegistry[resolvedGameType];
-  const GameIcon         = gameIconMap[entry.iconName] ?? Box;
+  const entry    = gameRegistry[gameType];
+  const GameIcon = gameIconMap[entry.iconName] ?? Box;
 
   // ── Live mode headline ──────────────────────────────────────────────────
   function liveHeadline(s: LiveSessionStats): { text: string; color: string } {
@@ -267,7 +266,7 @@ export default function ResultsScreen() {
       >
         <Button
           variant="primary"
-          onClick={() => navigate(`/game/${resolvedGameType}`)}
+          onClick={() => navigate(`/game/${gameType}`)}
           className="gap-2 sm:w-48"
         >
           <RotateCcw size={15} aria-hidden="true" />

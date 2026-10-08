@@ -1,3 +1,4 @@
+
 /**
  * GameSessionShell.tsx
  *
@@ -29,6 +30,7 @@ import BSTBoard              from "./game-boards/BSTBoard";
 import FloydWarshallBoard    from "./game-boards/FloydWarshallBoard";
 import MissingOperatorBoard  from "./game-boards/MissingOperatorBoard";
 import MathsQuestionsBoard   from "./game-boards/MathsQuestionsBoard";
+import SortingBoard          from "./game-boards/SortingBoard";
 
 type BoardComponent = React.ComponentType<{
   onRoundComplete?: (payload: RoundCompletePayload) => void;
@@ -43,10 +45,16 @@ const BOARD_MAP: Record<GameType, BoardComponent> = {
   "floyd-warshall":   FloydWarshallBoard,
   "missing-operator": MissingOperatorBoard,
   "maths-questions":  MathsQuestionsBoard,
+  "sorting":          SortingBoard,
 };
 
 // ─── Session constants ─────────────────────────────────────────────────────────
-const SESSION_SECONDS = 60;
+const DEFAULT_SESSION_SECONDS = 60;
+
+// Per-game override — add a line here to give any game a different length.
+const SESSION_SECONDS_BY_GAME: Partial<Record<GameType, number>> = {
+  sorting: 120,   // sorting rounds have 4–10 steps, so give players 2 minutes
+};
 
 // ─── Session-end stats ─────────────────────────────────────────────────────────
 export interface SessionEndStats {
@@ -97,8 +105,11 @@ export default function GameSessionShell({
   const Board    = BOARD_MAP[gameType];
 
   // ── Timer ──────────────────────────────────────────────────────────────────
-  const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS);
+
+
+  const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS_BY_GAME[gameType] ?? DEFAULT_SESSION_SECONDS);
   const timerRunning = useRef(true);
+
 
   // ── Round & score tracking ─────────────────────────────────────────────────
   const [round,        setRound]        = useState(1);
@@ -120,29 +131,27 @@ export default function GameSessionShell({
     statsRef.current = { round, correctTotal, totalActions };
   }, [round, correctTotal, totalActions]);
 
-  // ── Countdown ─────────────────────────────────────────────────────────────
+    // ── Countdown (only ticks; never triggers side effects itself) ────────────
   useEffect(() => {
-    if (!timerRunning.current) return;
     const id = setInterval(() => {
-      setTimeLeft((t) => {
-        if (t <= 1) {
-          clearInterval(id);
-          timerRunning.current = false;
-          const { round: r, correctTotal: c, totalActions: tot } = statsRef.current;
-          const accuracy = tot > 0 ? Math.round((c / tot) * 100) : 0;
-          sessionEndRef.current({
-            roundsCompleted: r - 1, // rounds fully completed (current round in progress)
-            correctCount:    c,
-            totalCount:      tot,
-            accuracy,
-          });
-          return 0;
-        }
-        return t - 1;
-      });
+      setTimeLeft((t) => (t > 0 ? t - 1 : 0));
     }, 1000);
     return () => clearInterval(id);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Session end — a separate effect, so the parent's onSessionEnd
+  // (which navigates / sets state) never runs inside a state updater ──────
+  useEffect(() => {
+    if (timeLeft > 0) return;
+    const { round: r, correctTotal: c, totalActions: tot } = statsRef.current;
+    const accuracy = tot > 0 ? Math.round((c / tot) * 100) : 0;
+    sessionEndRef.current({
+      roundsCompleted: r - 1,
+      correctCount:    c,
+      totalCount:      tot,
+      accuracy,
+    });
+  }, [timeLeft]);
 
    // ── Opponent live score (real Socket.io events) ──────────────────
   useEffect(() => {

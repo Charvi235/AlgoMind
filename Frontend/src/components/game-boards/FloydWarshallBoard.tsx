@@ -462,13 +462,13 @@ export default function FloydWarshallBoard({
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div className="flex flex-col gap-6">
 
       {/* ─────────────────────────────────────────────────────────────
           GRAPH
       ───────────────────────────────────────────────────────────── */}
 
-     <Card className="!p-4 lg:col-start-1 lg:row-start-1">
+      <Card className="!p-4">
 
         <div className="flex items-center justify-between mb-3">
 
@@ -921,7 +921,7 @@ export default function FloydWarshallBoard({
           MATRIX
       ───────────────────────────────────────────────────────────── */}
 
-     <div className="overflow-x-auto lg:col-start-2 lg:row-start-1 lg:flex lg:items-center lg:justify-center">
+      <div className="overflow-x-auto">
 
         <div
           className="inline-block rounded-xl border border-panelBorder overflow-hidden shadow-panel"

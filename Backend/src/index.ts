@@ -7,10 +7,26 @@ import { Server as SocketIOServer } from "socket.io";
 import { connectDB } from "./config/db";
 import { errorHandler } from "./middleware/errorHandler";
 import dijkstraRoutes from "./routes/dijkstraRoutes";
-import sessionRoutes from "./routes/sessionRoutes";
+
+import bstRoutes from "./routes/bstRoutes";
+
+//import sessionRoutes from "./routes/sessionRoutes";
+
 import { registerSocketHandlers } from "./sockets/socketHandlers";
 
 dotenv.config();
+
+// Fail fast: a missing secret must crash the deploy loudly, never
+// silently turn every user into a guest or break auth.
+const REQUIRED_ENV = ["MONGODB_URI", "JWT_SECRET"];
+for (const name of REQUIRED_ENV) {
+  if (!process.env[name]) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+}
+if (process.env.NODE_ENV === "production" && !process.env.CLIENT_URL) {
+  throw new Error("CLIENT_URL must be set in production, otherwise CORS rejects the real frontend");
+}
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -23,8 +39,14 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 app.use("/api/games/dijkstra", dijkstraRoutes);
+
+app.use("/api/games/bst", bstRoutes);
+// app.use("/api/auth", authRoutes);
+//import sessionRoutes from "./routes/sessionRoutes";
+// ─── Error handler (must be last) ──────────────────────────────
+
 app.use("/api/auth", authRoutes);
-app.use("/api/sessions", sessionRoutes);
+//app.use("/api/sessions", sessionRoutes);
 
 app.use(errorHandler);
 

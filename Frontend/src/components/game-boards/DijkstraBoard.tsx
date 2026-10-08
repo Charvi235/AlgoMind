@@ -251,63 +251,83 @@ export default function DijkstraBoard({
   }, [running]);
 
   const neighbors = game
-    ? (adjacency.get(game.currentNode) ?? []).filter((n) => !game.visitedNodes.has(n.id))
+    ? (adjacency.get(game.currentNode) ?? []).filter((n: { id: string; weight: number }) => !game.visitedNodes.has(n.id))
     : [];
 
-  const handlePick = useCallback((nextId: string) => {
+    const handlePick = useCallback((nextId: string) => {
     if (!game || !graph || game.won || validating) return;
 
     const key = edgeKey(game.currentNode, nextId);
     setValidating(true);
 
-    if (mode === "live") {
-      socket.emit("submit_step", { currentNode: game.currentNode, chosenNode: nextId });
-      socket.once("step_result", ({ correct, isComplete }: { correct: boolean; isComplete: boolean }) => {
-        setValidating(false);
-        if (!correct) {
-          setFlashEdge(key);
-          setTimeout(() => setFlashEdge(null), 500);
-          return;
-        }
-        setGame((prev) => {
-          if (!prev) return prev;
-          const newVisited = new Set(prev.visitedNodes).add(nextId);
-          const newEdges   = new Map(prev.traveledEdges);
-          newEdges.set(key, "traveled");
-          const newPath = [...prev.path, nextId];
-          if (isComplete) {
-            onWin?.(seconds + 1);
-            onRoundComplete?.({ correctActions: newPath.length - 1, totalActions: newPath.length - 1 });
-          }
-          // won stays false here — the server pushes the next round via
-          // "round_data" shortly, which resets the board automatically.
-          return { currentNode: nextId, visitedNodes: newVisited, traveledEdges: newEdges, path: newPath, won: false };
-        });
+    // Applies a CONFIRMED-correct move. State updates and parent callbacks
+    // are kept separate: parent callbacks must never run inside a setState
+    // updater (that caused the "update a component while rendering" warning).
+    const applyCorrectMove = (isComplete: boolean) => {
+      const newVisited = new Set(game.visitedNodes).add(nextId);
+      const newEdges   = new Map(game.traveledEdges);
+      newEdges.set(key, "traveled");
+      const newPath = [...game.path, nextId];
+
+      // Live mode: won stays false, the server pushes the next round
+      // via "round_data" which resets the board.
+      setGame({
+        currentNode:   nextId,
+        visitedNodes:  newVisited,
+        traveledEdges: newEdges,
+        path:          newPath,
+        won:           mode === "solo" ? isComplete : false,
       });
+
+      if (isComplete) {
+        if (mode === "solo") setRunning(false);
+        onWin?.(seconds + 1);
+        onRoundComplete?.({
+          correctActions: newPath.length - 1,
+          totalActions:   mode === "solo" ? optimalPath.length - 1 : newPath.length - 1,
+        });
+      }
+    };
+
+    const flashWrong = () => {
+      setFlashEdge(key);
+      setTimeout(() => setFlashEdge(null), 500);
+    };
+
+    // ── Live mode: socket round-trip, with a timeout so a lost reply
+    // can never freeze the board ─────────────────────────────────────
+    if (mode === "live") {
+      let settled = false;
+      let timeoutId: ReturnType<typeof setTimeout>;
+
+      const onResult = ({ correct, isComplete }: { correct: boolean; isComplete: boolean }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        socket.off("step_result", onResult);
+        setValidating(false);
+        if (correct) applyCorrectMove(isComplete);
+        else flashWrong();
+      };
+
+      timeoutId = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        socket.off("step_result", onResult);
+        setValidating(false); // unfreeze, player can simply click again
+        flashWrong();
+      }, 4000);
+
+      socket.on("step_result", onResult);
+      socket.emit("submit_step", { currentNode: game.currentNode, chosenNode: nextId });
       return;
     }
 
     // ── Solo mode: REST validation ────────────────────────────────
     validateStep(graph.graphId!, game.currentNode, nextId)
       .then(({ correct, isComplete }) => {
-        if (!correct) {
-          setFlashEdge(key);
-          setTimeout(() => setFlashEdge(null), 500);
-          return;
-        }
-        setGame((prev) => {
-          if (!prev) return prev;
-          const newVisited = new Set(prev.visitedNodes).add(nextId);
-          const newEdges   = new Map(prev.traveledEdges);
-          newEdges.set(key, "traveled");
-          const newPath = [...prev.path, nextId];
-          if (isComplete) {
-            setRunning(false);
-            onWin?.(seconds + 1);
-            onRoundComplete?.({ correctActions: newPath.length - 1, totalActions: optimalPath.length - 1 });
-          }
-          return { currentNode: nextId, visitedNodes: newVisited, traveledEdges: newEdges, path: newPath, won: isComplete };
-        });
+        if (correct) applyCorrectMove(isComplete);
+        else flashWrong();
       })
       .catch(() => setLoadError("Couldn't validate that move. Check your connection."))
       .finally(() => setValidating(false));
@@ -374,7 +394,7 @@ export default function DijkstraBoard({
       const isCurrent = n.id === game.currentNode;
       const isVisited = game.visitedNodes.has(n.id);
       const isSelectable = !game.won && adjacency.get(game.currentNode)?.some(
-        (nb) => nb.id === n.id && !game.visitedNodes.has(n.id)
+        (nb: { id: string; weight: number }) => nb.id === n.id && !game.visitedNodes.has(n.id)
       );
       const fill   = isTarget ? C.gold : isVisited ? C.teal : C.node;
       const filter = isTarget ? "url(#dij-glow-gold)" : isCurrent || isVisited ? "url(#dij-glow-teal)" : "url(#dij-glow-node)";
@@ -546,7 +566,7 @@ export default function DijkstraBoard({
                 </p>
               ) : (
                 <ul className="flex flex-col gap-2" role="list">
-                  {neighbors.map((nb) => (
+                  {neighbors.map((nb: { id: string; weight: number }) => (
                     <li
                       key={nb.id}
                       className="w-full flex items-center justify-between rounded-lg border border-panelBorder bg-background/40 px-3 py-2"

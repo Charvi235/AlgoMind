@@ -15,6 +15,7 @@ export interface Player {
   score: number;
   correctCount: number;
   totalActions: number;
+  attempts: number; // every submit_step, correct or not — used for accuracy
 }
 
 export interface Room {
@@ -47,7 +48,7 @@ function generateCode(): string {
 }
 
 function newPlayer(socketId: string, userId?: string, username?: string): Player {
-  return { socketId, userId, username, score: 0, correctCount: 0, totalActions: 0 };
+  return { socketId, userId, username, score: 0, correctCount: 0, totalActions: 0, attempts: 0 };
 }
 
 export function createRoom(
