@@ -4,81 +4,96 @@
  * Route: /game/:gameType/match/:roomId
  *
  * Thin wrapper around GameSessionShell for live (multiplayer) mode.
- * Reads gameType and roomId from the URL, renders the shell in live mode,
- * and navigates to ResultsScreen with both players' final stats when the
- * session ends.
- *
- * ─── TODO: REAL SOCKET.IO INTEGRATION ────────────────────────────────────────
- *
- * The following mock behaviours need replacing with real Socket.io calls:
- *
- * 1. JOINING THE ROOM
- *    On mount, emit:
- *      socket.emit("join-room", { roomId, gameType })
- *    Listen for a confirmation:
- *      socket.on("room-joined", ({ players }) => { ... })
- *    Use the returned player list to populate opponentLabel.
- *
- * 2. SYNCED START SIGNAL
- *    The session timer should NOT start until both players are ready.
- *    Listen for:
- *      socket.on("match-start", () => { setReady(true) })
- *    Pass a `ready` flag to GameSessionShell (add a prop) to hold the
- *    timer at SESSION_SECONDS until the server fires this event.
- *
- * 3. OPPONENT SCORE UPDATES
- *    The mock opponent ticker inside GameSessionShell should be replaced
- *    entirely. Instead, pass opponentScore as a controlled prop:
- *      socket.on("opponent-score-update", ({ score }) => setOpponentScore(score))
- *    Add an `opponentScore` prop to GameSessionShell and display it from
- *    the parent rather than managing it internally.
- *
- * 4. SYNCED END-OF-MATCH
- *    Replace the local 60-second timer expiry with a server-fired event:
- *      socket.on("match-end", ({ playerStats, opponentStats }) => { ... })
- *    Use the server-provided stats to build LiveSessionStats and navigate.
- *    The local timer can be kept as a fallback / visual display only.
- *
- * 5. CLEANUP
- *    On component unmount:
- *      socket.emit("leave-room", { roomId })
- *      socket.off("match-start")
- *      socket.off("opponent-score-update")
- *      socket.off("match-end")
- *
- * ─────────────────────────────────────────────────────────────────────────────
+ * The SERVER decides when the match ends: results are built from the
+ * `match_end` socket event (real stats + winner for both players).
+ * The shell's local timer only shows "Time's up!" and starts a short
+ * wait for that event, with a fallback if it never arrives.
  */
 
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft } from "lucide-react";
-import GameSessionShell, { type SessionEndStats } from "../components/GameSessionShell";
-import { computeXP } from "../types/session";
-import type { LiveSessionStats } from "../types/session";
+import { ArrowLeft, WifiOff } from "lucide-react";
+import GameSessionShell from "../components/GameSessionShell";
+import { socket } from "../lib/socket";
+import type { LiveSessionStats, PlayerResult } from "../types/session";
 import { isGameType } from "../config/gameRegistry";
 
-// ─── Mock opponent label ───────────────────────────────────────────────────────
-// TODO: replace with the real opponent display name received from the server
-// via the "room-joined" socket event.
-const MOCK_OPPONENT_LABEL = "Opponent";
-
-// ─── Mock opponent round count ────────────────────────────────────────────────
-// TODO: replace with the opponentStats received in the "match-end" socket event.
-function mockOpponentStats(playerRounds: number): {
+interface MatchEndResult {
+  socketId:        string;
+  username:        string | null;
   roundsCompleted: number;
-  correctCount: number;
-  accuracy: number;
-} {
-  const rounds   = Math.max(0, playerRounds + Math.floor(Math.random() * 3) - 1);
-  const correct  = rounds * (5 + Math.floor(Math.random() * 5));
-  const accuracy = rounds > 0 ? Math.min(100, 60 + Math.floor(Math.random() * 40)) : 0;
-  return { roundsCompleted: rounds, correctCount: correct, accuracy };
+  accuracy:        number;
+  xp:              number;
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+interface MatchEndPayload {
+  results:        MatchEndResult[];
+  winnerSocketId: string | null; // null = tie
+}
+
+// How long to wait for match_end after our local timer hits zero.
+const RESULTS_WAIT_MS = 10000;
+
+function toPlayerResult(r: MatchEndResult, label: string): PlayerResult {
+  return {
+    label,
+    roundsCompleted: r.roundsCompleted,
+    correctCount:    r.roundsCompleted,
+    accuracy:        r.accuracy,
+    xp:              r.xp,
+  };
+}
+
 export default function LiveMatch() {
   const { gameType, roomId } = useParams<{ gameType: string; roomId: string }>();
   const navigate             = useNavigate();
+
+  const [opponentLeft,      setOpponentLeft]      = useState(false);
+  const [waitingForResults, setWaitingForResults] = useState(false);
+  const [resultsTimedOut,   setResultsTimedOut]   = useState(false);
+
+  // ── Server-driven match end + opponent-left notice ─────────────────────
+  useEffect(() => {
+    if (!gameType) return;
+
+    const onMatchEnd = ({ results, winnerSocketId }: MatchEndPayload) => {
+      const me  = results.find((r) => r.socketId === socket.id);
+      const opp = results.find((r) => r.socketId !== socket.id);
+      if (!me || !opp) return;
+
+      const winner: LiveSessionStats["winner"] =
+        winnerSocketId === null        ? "tie" :
+        winnerSocketId === socket.id   ? "player" :
+                                         "opponent";
+
+      const stats: LiveSessionStats = {
+        mode:     "live",
+        gameType,
+        roomId:   roomId ?? "unknown",
+        player:   toPlayerResult(me, "You"),
+        opponent: toPlayerResult(opp, opp.username ?? "Opponent"),
+        winner,
+      };
+      navigate(`/game/${gameType}/results`, { state: stats });
+    };
+
+    const onOpponentLeft = () => setOpponentLeft(true);
+
+    socket.on("match_end", onMatchEnd);
+    socket.on("opponent_left", onOpponentLeft);
+    return () => {
+      socket.off("match_end", onMatchEnd);
+      socket.off("opponent_left", onOpponentLeft);
+    };
+  }, [gameType, roomId, navigate]);
+
+  // ── Fallback if match_end never arrives after our timer ended ──────────
+  useEffect(() => {
+    if (!waitingForResults) return;
+    const id = setTimeout(() => setResultsTimedOut(true), RESULTS_WAIT_MS);
+    return () => clearTimeout(id);
+  }, [waitingForResults]);
 
   if (!isGameType(gameType)) {
     return (
@@ -96,41 +111,11 @@ export default function LiveMatch() {
 
   const resolvedRoomId = roomId ?? "unknown";
 
-  const handleSessionEnd = (raw: SessionEndStats) => {
-    // TODO: replace mockOpponentStats with real stats from the "match-end" socket event
-    const oppRaw = mockOpponentStats(raw.roundsCompleted);
-
-    const playerResult = {
-      label:           "You",
-      roundsCompleted: raw.roundsCompleted,
-      correctCount:    raw.correctCount,
-      accuracy:        raw.accuracy,
-      xp:              computeXP(raw.roundsCompleted, raw.accuracy),
-    };
-
-    const opponentResult = {
-      label:           MOCK_OPPONENT_LABEL,
-      roundsCompleted: oppRaw.roundsCompleted,
-      correctCount:    oppRaw.correctCount,
-      accuracy:        oppRaw.accuracy,
-      xp:              computeXP(oppRaw.roundsCompleted, oppRaw.accuracy),
-    };
-
-    const winner: LiveSessionStats["winner"] =
-      playerResult.roundsCompleted > opponentResult.roundsCompleted ? "player" :
-      playerResult.roundsCompleted < opponentResult.roundsCompleted ? "opponent" :
-      "tie";
-
-    const stats: LiveSessionStats = {
-      mode:     "live",
-      gameType,
-      roomId:   resolvedRoomId,
-      player:   playerResult,
-      opponent: opponentResult,
-      winner,
-    };
-
-    navigate(`/game/${gameType}/results`, { state: stats });
+  // Disconnecting the socket lets the server notify the opponent
+  // (opponent_left) instead of leaving them playing against a ghost.
+  const handleLeave = () => {
+    socket.disconnect();
+    navigate(`/game/${gameType}/friends`);
   };
 
   return (
@@ -141,12 +126,11 @@ export default function LiveMatch() {
       exit={{    opacity: 0, y: -8 }}
       transition={{ duration: 0.25, ease: "easeInOut" }}
     >
-      {/* Back / abandon link */}
       <motion.button
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.15 }}
-        onClick={() => navigate(`/game/${gameType}/friends`)}
+        onClick={handleLeave}
         className="flex items-center gap-1.5 w-fit text-sm text-textMuted hover:text-textPrimary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-node rounded"
         aria-label="Leave match"
       >
@@ -154,7 +138,6 @@ export default function LiveMatch() {
         Leave match
       </motion.button>
 
-      {/* Room ID pill */}
       <div className="flex items-center gap-2">
         <span className="text-xs text-textMuted">Room:</span>
         <span className="font-mono text-xs text-node border border-panelBorder bg-panel rounded px-2 py-0.5">
@@ -162,12 +145,44 @@ export default function LiveMatch() {
         </span>
       </div>
 
+      {opponentLeft && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium"
+          style={{
+            borderColor: "rgba(255,107,138,0.35)",
+            background:  "rgba(255,107,138,0.07)",
+            color:       "#FF6B8A",
+          }}
+        >
+          <WifiOff size={14} aria-hidden="true" />
+          Your opponent disconnected. The match will end shortly.
+        </div>
+      )}
+
       <GameSessionShell
         gameType={gameType}
         mode="live"
-        opponentLabel={MOCK_OPPONENT_LABEL}
-        onSessionEnd={handleSessionEnd}
+        onSessionEnd={() => setWaitingForResults(true)}
       />
+
+      {waitingForResults && !resultsTimedOut && (
+        <p className="text-center text-sm text-textMuted">Waiting for final results…</p>
+      )}
+
+      {resultsTimedOut && (
+        <div className="flex flex-col items-center gap-3 text-center">
+          <p className="text-sm text-textMuted">
+            We couldn't fetch the final results. The match may have ended early.
+          </p>
+          <button
+            onClick={() => navigate("/")}
+            className="text-sm text-textMuted underline hover:text-textPrimary transition-colors"
+          >
+            Back to Dashboard
+          </button>
+        </div>
+      )}
     </motion.div>
   );
 }

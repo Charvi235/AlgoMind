@@ -20,6 +20,7 @@ const C = {
   background:  "#060709",
   panel:       "#0D1130",
   panelBorder: "#2A3166",
+  node:        "#7FA8FF",
   gold:        "#FFD36E",
   teal:        "#6EE7C4",
   textPrimary: "#E8ECFB",

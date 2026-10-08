@@ -55,7 +55,7 @@ const NodeSchema = new Schema<INode>(
 
 
 const DijkstraMatchSchema = new Schema<IDijkstraMatch>({
-  graphId: { type: String, required: true, unique: true, index: true },
+  graphId: { type: String, required: true, unique: true },
   nodes: { type: [NodeSchema], required: true },
   edges: { type: [EdgeSchema], required: true },
   start: { type: String, required: true },

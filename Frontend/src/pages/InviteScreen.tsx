@@ -189,7 +189,7 @@ export default function InviteScreen() {
               onClick={handleShare}
               disabled={!code}
               className="w-full flex items-center justify-center gap-2 rounded-lg border border-panelBorder bg-background px-4 py-3 text-sm font-medium text-textPrimary hover:border-gold/50 hover:bg-gold/5 transition-colors duration-200 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold"
-              aria-label={typeof navigator !== "undefined" && navigator.share ? "Share invite link" : "Copy invite link to clipboard"}
+              aria-label={typeof navigator !== "undefined" && "share" in navigator ? "Share invite link" : "Copy invite link to clipboard"}
             >
               {copiedTarget === "link" ? (
                 <>
@@ -200,7 +200,7 @@ export default function InviteScreen() {
                 <>
                   <Share2 size={15} className="text-gold" aria-hidden="true" />
                   <span className="text-gold">
-                    {typeof navigator !== "undefined" && navigator.share ? "Share Link" : "Copy Link"}
+                    {typeof navigator !== "undefined" && "share" in navigator ? "Share Link" : "Copy Link"}
                   </span>
                 </>
               )}

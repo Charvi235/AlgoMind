@@ -97,8 +97,7 @@ export default function GameSessionShell({
   const Board    = BOARD_MAP[gameType];
 
   // ── Timer ──────────────────────────────────────────────────────────────────
-  const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS);
-  const timerRunning = useRef(true);
+    const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS);
 
   // ── Round & score tracking ─────────────────────────────────────────────────
   const [round,        setRound]        = useState(1);
@@ -120,29 +119,27 @@ export default function GameSessionShell({
     statsRef.current = { round, correctTotal, totalActions };
   }, [round, correctTotal, totalActions]);
 
-  // ── Countdown ─────────────────────────────────────────────────────────────
+    // ── Countdown (only ticks; never triggers side effects itself) ────────────
   useEffect(() => {
-    if (!timerRunning.current) return;
     const id = setInterval(() => {
-      setTimeLeft((t) => {
-        if (t <= 1) {
-          clearInterval(id);
-          timerRunning.current = false;
-          const { round: r, correctTotal: c, totalActions: tot } = statsRef.current;
-          const accuracy = tot > 0 ? Math.round((c / tot) * 100) : 0;
-          sessionEndRef.current({
-            roundsCompleted: r - 1, // rounds fully completed (current round in progress)
-            correctCount:    c,
-            totalCount:      tot,
-            accuracy,
-          });
-          return 0;
-        }
-        return t - 1;
-      });
+      setTimeLeft((t) => (t > 0 ? t - 1 : 0));
     }, 1000);
     return () => clearInterval(id);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Session end — a separate effect, so the parent's onSessionEnd
+  // (which navigates / sets state) never runs inside a state updater ──────
+  useEffect(() => {
+    if (timeLeft > 0) return;
+    const { round: r, correctTotal: c, totalActions: tot } = statsRef.current;
+    const accuracy = tot > 0 ? Math.round((c / tot) * 100) : 0;
+    sessionEndRef.current({
+      roundsCompleted: r - 1,
+      correctCount:    c,
+      totalCount:      tot,
+      accuracy,
+    });
+  }, [timeLeft]);
 
    // ── Opponent live score (real Socket.io events) ──────────────────
   useEffect(() => {
