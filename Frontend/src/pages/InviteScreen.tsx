@@ -116,7 +116,7 @@ export default function InviteScreen() {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
         <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
-        <button onClick={() => navigate("/")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
+        <button onClick={() => navigate("/dashboard")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
           Back to Dashboard
         </button>
       </div>

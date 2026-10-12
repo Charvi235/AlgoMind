@@ -192,7 +192,7 @@ export default function ResultsScreen() {
     return (
       <div className="flex flex-col items-center justify-center gap-6 py-24 text-center">
         <p className="text-textMuted text-sm">No session data found.</p>
-        <Button variant="primary" onClick={() => navigate("/")}>
+        <Button variant="primary" onClick={() => navigate("/dashboard")}>
           Back to Dashboard
         </Button>
       </div>
@@ -274,7 +274,7 @@ export default function ResultsScreen() {
         </Button>
         <Button
           variant="secondary"
-          onClick={() => navigate("/")}
+          onClick={() => navigate("/dashboard")}
           className="gap-2 sm:w-48"
         >
           <LayoutDashboard size={15} aria-hidden="true" />
