@@ -206,7 +206,7 @@ export default function Leaderboard() {
       {/* ── Back link ───────────────────────────────────────────────────── */}
       <motion.div variants={fadeUp}>
         <Link
-          to="/"
+          to="/dashboard"
           className="text-sm text-textMuted hover:text-textPrimary transition-colors focus-visible:outline-none focus-visible:underline"
         >
           ← Back to Dashboard

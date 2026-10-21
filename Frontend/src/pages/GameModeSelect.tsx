@@ -68,7 +68,7 @@ export default function GameModeSelect() {
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
         <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
         <button
-          onClick={() => navigate("/")}
+          onClick={() => navigate("/dashboard")}
           className="text-sm text-textMuted underline hover:text-textPrimary transition-colors"
         >
           Back to Dashboard
@@ -99,7 +99,7 @@ export default function GameModeSelect() {
       {/* Back link */}
       <motion.button
         variants={fadeUp}
-        onClick={() => navigate("/")}
+        onClick={() => navigate("/dashboard")}
         className="flex items-center gap-1.5 w-fit text-sm text-textMuted hover:text-textPrimary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-node rounded"
         aria-label="Back to dashboard"
       >

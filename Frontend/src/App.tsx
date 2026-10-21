@@ -6,6 +6,11 @@ import AppLayout from "./components/AppLayout";
 import Dashboard            from "./pages/Dashboard";
 import Leaderboard          from "./pages/Leaderboard";
 
+// ── Auth / landing pages (own layout — no Navbar) ─────────────────────────────
+import LandingPage          from "./pages/LandingPage";
+import LoginPage            from "./pages/LoginPage";
+import SignupPage           from "./pages/SignupPage";
+
 // ── Shared game-flow pages ────────────────────────────────────────────────────
 import GameModeSelect       from "./pages/GameModeSelect";
 import FriendModeSelect     from "./pages/FriendModeSelect";
@@ -49,62 +54,65 @@ export default function App() {
   const location = useLocation();
 
   return (
-    <AppLayout>
-      <AnimatePresence mode="wait">
-        <Routes location={location} key={location.pathname}>
+    <AnimatePresence mode="wait">
+      <Routes location={location} key={location.pathname}>
 
-          {/* ── Core ──────────────────────────────────────────────────── */}
-          <Route path="/" element={
-            <PageWrapper><Dashboard /></PageWrapper>
-          } />
-          <Route path="/leaderboard" element={
-            <PageWrapper><Leaderboard /></PageWrapper>
-          } />
+        {/* ── Public pages — own layout (no Navbar) ──────────────────── */}
+        <Route path="/" element={
+          <PageWrapper><LandingPage /></PageWrapper>
+        } />
+        <Route path="/login" element={
+          <PageWrapper><LoginPage /></PageWrapper>
+        } />
+        <Route path="/signup" element={
+          <PageWrapper><SignupPage /></PageWrapper>
+        } />
 
-          {/* ── Shared game flow ─────────────────────────────────────── */}
-          {/* Step 1: solo vs friends */}
-          <Route path="/game/:gameType" element={
-            <PageWrapper><GameModeSelect /></PageWrapper>
-          } />
-          {/* Step 2 (solo): 60-second session */}
-          <Route path="/game/:gameType/solo" element={
-            <PageWrapper><SoloSession /></PageWrapper>
-          } />
-          {/* Step 2 (live): multiplayer match */}
-          <Route path="/game/:gameType/match/:roomId" element={
-            <PageWrapper><LiveMatch /></PageWrapper>
-          } />
-          {/* Step 3 (both): results screen */}
-          <Route path="/game/:gameType/results" element={
-            <PageWrapper><ResultsScreen /></PageWrapper>
-          } />
-          {/* Step 2 (friends sub-mode chooser) */}
-          <Route path="/game/:gameType/friends" element={
-            <PageWrapper><FriendModeSelect /></PageWrapper>
-          } />
+        {/* ── App pages — inside AppLayout (with Navbar) ─────────────── */}
+        <Route path="/dashboard" element={
+          <AppLayout><PageWrapper><Dashboard /></PageWrapper></AppLayout>
+        } />
+        <Route path="/leaderboard" element={
+          <AppLayout><PageWrapper><Leaderboard /></PageWrapper></AppLayout>
+        } />
 
-          {/* ── Multiplayer lobby ────────────────────────────────────── */}
-          <Route path="/game/:gameType/queue" element={
-            <PageWrapper><RandomQueue /></PageWrapper>
-          } />
-          <Route path="/game/:gameType/invite" element={
-            <PageWrapper><InviteScreen /></PageWrapper>
-          } />
-          <Route path="/game/:gameType/join" element={
-            <PageWrapper><JoinRoomScreen /></PageWrapper>
-          } />
-          {/* Guest entering code without a gameType in URL (from JoinRedirect) */}
-          <Route path="/join-room" element={
-            <PageWrapper><JoinRoomScreen /></PageWrapper>
-          } />
+        {/* ── Shared game flow ─────────────────────────────────────────── */}
+        <Route path="/game/:gameType" element={
+          <AppLayout><PageWrapper><GameModeSelect /></PageWrapper></AppLayout>
+        } />
+        <Route path="/game/:gameType/solo" element={
+          <AppLayout><PageWrapper><SoloSession /></PageWrapper></AppLayout>
+        } />
+        <Route path="/game/:gameType/match/:roomId" element={
+          <AppLayout><PageWrapper><LiveMatch /></PageWrapper></AppLayout>
+        } />
+        <Route path="/game/:gameType/results" element={
+          <AppLayout><PageWrapper><ResultsScreen /></PageWrapper></AppLayout>
+        } />
+        <Route path="/game/:gameType/friends" element={
+          <AppLayout><PageWrapper><FriendModeSelect /></PageWrapper></AppLayout>
+        } />
 
-          {/* ── Deep-link entry point ────────────────────────────────── */}
-          <Route path="/join/:roomCode" element={
-            <PageWrapper><JoinRedirect /></PageWrapper>
-          } />
+        {/* ── Multiplayer lobby ─────────────────────────────────────────── */}
+        <Route path="/game/:gameType/queue" element={
+          <AppLayout><PageWrapper><RandomQueue /></PageWrapper></AppLayout>
+        } />
+        <Route path="/game/:gameType/invite" element={
+          <AppLayout><PageWrapper><InviteScreen /></PageWrapper></AppLayout>
+        } />
+        <Route path="/game/:gameType/join" element={
+          <AppLayout><PageWrapper><JoinRoomScreen /></PageWrapper></AppLayout>
+        } />
+        <Route path="/join-room" element={
+          <AppLayout><PageWrapper><JoinRoomScreen /></PageWrapper></AppLayout>
+        } />
 
-        </Routes>
-      </AnimatePresence>
-    </AppLayout>
+        {/* ── Deep-link entry point ─────────────────────────────────────── */}
+        <Route path="/join/:roomCode" element={
+          <AppLayout><PageWrapper><JoinRedirect /></PageWrapper></AppLayout>
+        } />
+
+      </Routes>
+    </AnimatePresence>
   );
 }

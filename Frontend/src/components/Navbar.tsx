@@ -2,7 +2,7 @@ import { Flame, Sparkles } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
 const navLinks = [
-  { label: "Dashboard", to: "/" },
+  { label: "Dashboard", to: "/dashboard" },
   { label: "Leaderboard", to: "/leaderboard" },
 ];
 
@@ -13,7 +13,7 @@ export default function Navbar() {
 
         {/* ── Logo ─────────────────────────────────────────────────── */}
         <NavLink
-          to="/"
+          to="/dashboard"
           className="flex items-center gap-2 shrink-0 group"
           aria-label="AlgoMind home"
         >
@@ -33,7 +33,7 @@ export default function Navbar() {
             <NavLink
               key={to}
               to={to}
-              end={to === "/"}
+              end={to === "/dashboard"}
               className={({ isActive }) =>
                 [
                   "px-3 py-1.5 rounded-lg text-sm font-medium transition-colors duration-200",
