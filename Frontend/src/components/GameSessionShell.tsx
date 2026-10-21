@@ -108,7 +108,7 @@ export default function GameSessionShell({
 
 
   const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS_BY_GAME[gameType] ?? DEFAULT_SESSION_SECONDS);
-  const timerRunning = useRef(true);
+  
 
 
   // ── Round & score tracking ─────────────────────────────────────────────────

@@ -27,7 +27,7 @@ import {
   buildSortRound,
   randomAlgo,
   type SortRound,
-} from "../../utils/sortingEngine";
+} from "../../utils/SortingEngine";
 
 // ─── Theme ─────────────────────────────────────────────────────────────────────
 const C = {

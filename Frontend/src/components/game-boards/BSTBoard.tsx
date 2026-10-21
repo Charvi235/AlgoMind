@@ -694,7 +694,7 @@ export default function BSTBoard({
   const [won,       setWon]       = useState(false);
   const [loading,   setLoading]   = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
- const [matchId, setMatchId] = useState<string | null>(null);
+ const [, setMatchId] = useState<string | null>(null);
   const [dragging,    setDragging]    = useState<number | null>(null);
   const [hoveredSlot, setHoveredSlot] = useState<SlotInfo | null>(null);
   const [pulseNode,   setPulseNode]   = useState<number | null>(null);
