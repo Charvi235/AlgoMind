@@ -15,6 +15,7 @@ import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import { gameRegistryList } from "../config/gameRegistry";
 import { gameIconMap } from "../config/gameIconMap";
+import { useAuth } from "../context/AuthContext";
 
 // ─── Animation helpers ────────────────────────────────────────────────────────
 
@@ -212,6 +213,7 @@ const HOW_IT_WORKS = [
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function LandingPage() {
+  const { user } = useAuth();   // loading is intentionally ignored — never block render
   const gamesRef = useRef<HTMLElement>(null);
 
   return (
@@ -241,18 +243,28 @@ export default function LandingPage() {
               </span>
             </Link>
 
-            {/* Auth buttons */}
+            {/* Auth buttons — adapts to login state */}
             <nav className="flex items-center gap-2" aria-label="Account navigation">
-              <Link to="/login" tabIndex={-1}>
-                <Button variant="secondary" className="min-h-[44px] min-w-[80px]">
-                  Log in
-                </Button>
-              </Link>
-              <Link to="/signup" tabIndex={-1}>
-                <Button variant="primary" className="min-h-[44px] min-w-[80px]">
-                  Sign up
-                </Button>
-              </Link>
+              {user ? (
+                <Link to="/dashboard" tabIndex={-1}>
+                  <Button variant="primary" className="min-h-[44px] min-w-[80px]">
+                    Go to dashboard
+                  </Button>
+                </Link>
+              ) : (
+                <>
+                  <Link to="/login" tabIndex={-1}>
+                    <Button variant="secondary" className="min-h-[44px] min-w-[80px]">
+                      Log in
+                    </Button>
+                  </Link>
+                  <Link to="/signup" tabIndex={-1}>
+                    <Button variant="primary" className="min-h-[44px] min-w-[80px]">
+                      Sign up
+                    </Button>
+                  </Link>
+                </>
+              )}
             </nav>
           </div>
         </header>
@@ -289,20 +301,33 @@ export default function LandingPage() {
               </motion.div>
 
               <motion.div variants={fadeUp} className="flex flex-col gap-4 sm:flex-row sm:items-center">
-                <Link to="/signup" tabIndex={-1}>
-                  <Button
-                    variant="primary"
-                    className="min-h-[48px] px-8 text-base font-bold w-full sm:w-auto"
-                  >
-                    Start Playing
-                  </Button>
-                </Link>
-                <Link
-                  to="/login"
-                  className="text-sm text-textMuted hover:text-textPrimary transition-colors text-center underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-node rounded min-h-[44px] flex items-center justify-center"
-                >
-                  I already have an account
-                </Link>
+                {user ? (
+                  <Link to="/dashboard" tabIndex={-1}>
+                    <Button
+                      variant="primary"
+                      className="min-h-[48px] px-8 text-base font-bold w-full sm:w-auto"
+                    >
+                      Start Playing
+                    </Button>
+                  </Link>
+                ) : (
+                  <>
+                    <Link to="/signup" tabIndex={-1}>
+                      <Button
+                        variant="primary"
+                        className="min-h-[48px] px-8 text-base font-bold w-full sm:w-auto"
+                      >
+                        Start Playing
+                      </Button>
+                    </Link>
+                    <Link
+                      to="/login"
+                      className="text-sm text-textMuted hover:text-textPrimary transition-colors text-center underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-node rounded min-h-[44px] flex items-center justify-center"
+                    >
+                      I already have an account
+                    </Link>
+                  </>
+                )}
               </motion.div>
             </motion.div>
 

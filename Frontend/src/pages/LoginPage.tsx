@@ -4,19 +4,20 @@
  * Route: /login
  * Own layout — StarfieldBackground + centered card, no Navbar.
  *
- * UI ONLY. Submit handler is a stub: logs values, shows 600 ms loading state.
- * No backend calls, no localStorage, no navigation on submit.
+ * Wired to POST /api/auth/login via AuthContext.login().
+ * On success navigates to /dashboard.
+ * If a user is already authenticated, redirects to /dashboard immediately.
  *
- * TODO: replace handleSubmit body with a real POST /api/auth/login call,
- *       store the returned JWT, and navigate("/dashboard") on success.
+ * TODO: restore "Email or username" label once the backend accepts usernames.
  */
 
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Sparkles } from "lucide-react";
 import StarfieldBackground from "../components/StarfieldBackground";
 import Button from "../components/ui/Button";
+import { useAuth } from "../context/AuthContext";
 
 // ─── Google "G" SVG ──────────────────────────────────────────────────────────
 
@@ -119,22 +120,35 @@ function ThemedInput({ label, id, errorMessage, rightSlot, className = "", ...re
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function LoginPage() {
-  const [identifier,   setIdentifier]   = useState("");
+  const { user, login }            = useAuth();
+  const navigate                   = useNavigate();
+
+  const [email,        setEmail]        = useState("");
   const [password,     setPassword]     = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading,      setLoading]      = useState(false);
+  const [serverError,  setServerError]  = useState("");
 
-  // Stub submit handler
-  // TODO: replace with real POST /api/auth/login, store JWT, navigate("/dashboard")
-  const handleSubmit = (e: React.FormEvent) => {
+  // Already logged in — redirect without blocking the render.
+  useEffect(() => {
+    if (user) navigate("/dashboard", { replace: true });
+  }, [user, navigate]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loading) return;
 
+    setServerError("");
     setLoading(true);
-    console.log("[LoginPage] submit:", { identifier, password });
 
-    // Simulate ~600 ms network round-trip
-    setTimeout(() => setLoading(false), 600);
+    try {
+      await login(email, password);
+      navigate("/dashboard", { replace: true });
+    } catch (err) {
+      setServerError(err instanceof Error ? err.message : "Login failed");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const togglePassword = () => setShowPassword((v) => !v);
@@ -182,14 +196,26 @@ export default function LoginPage() {
 
             {/* Form */}
             <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
+              {/* Server-level error (shown above fields, not tied to a single input) */}
+              {serverError && (
+                <p
+                  role="alert"
+                  aria-live="assertive"
+                  className="rounded-lg border border-error/40 bg-error/10 px-4 py-2.5 text-sm text-error"
+                >
+                  {serverError}
+                </p>
+              )}
+
+              {/* TODO: restore label to "Email or username" once the backend accepts usernames */}
               <ThemedInput
-                id="login-identifier"
-                label="Email or username"
-                type="text"
-                autoComplete="username"
+                id="login-email"
+                label="Email"
+                type="email"
+                autoComplete="email"
                 placeholder="you@example.com"
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 required
                 disabled={loading}
               />
