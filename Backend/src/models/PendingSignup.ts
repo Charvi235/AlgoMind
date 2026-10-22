@@ -13,6 +13,7 @@ export interface IPendingSignup extends Document {
   attempts: number;
   lastSentAt: Date;
   verified: boolean;
+  signupTokenHash?: string; // proof of a verified email, used to pick a username
   expiresAt: Date;
 }
 
@@ -23,6 +24,7 @@ const PendingSignupSchema = new Schema<IPendingSignup>({
   attempts: { type: Number, default: 0 },
   lastSentAt: { type: Date, default: Date.now },
   verified: { type: Boolean, default: false },
+  signupTokenHash: { type: String },
   expiresAt: { type: Date, required: true, index: { expireAfterSeconds: 0 } },
 });
 
