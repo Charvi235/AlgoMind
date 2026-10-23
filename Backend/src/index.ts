@@ -29,6 +29,24 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 
+// Behind Render's proxy every request looks like it comes from the proxy's IP,
+// which would make per-IP limits count ALL users as one. TRUST_PROXY_HOPS says
+// how many proxies to trust when reading X-Forwarded-For (0 = none, local dev).
+// Never use `true`: clients could then spoof their IP.
+const TRUST_PROXY_HOPS = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+if (Number.isInteger(TRUST_PROXY_HOPS) && TRUST_PROXY_HOPS >= 0) {
+  app.set("trust proxy", TRUST_PROXY_HOPS);
+}
+
+// Temporary helper to measure the right hop count after deploying.
+// Only exists while DEBUG_IP=1 is set. Remove the variable when done.
+if (process.env.DEBUG_IP === "1") {
+  app.get("/api/debug/ip", (req, res) => {
+    res.json({ ip: req.ip, xForwardedFor: req.headers["x-forwarded-for"] ?? null });
+  });
+}
+
+
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
 app.use(express.json());
 

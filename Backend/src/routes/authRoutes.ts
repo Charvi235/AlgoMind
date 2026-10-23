@@ -9,15 +9,24 @@ import {
   getMe,
 } from "../controllers/authController";
 import { authMiddleware } from "../middleware/auth";
+import {
+  signupStartIpLimiter,
+  signupStartDailyLimiter,
+  resendIpLimiter,
+  verifyIpLimiter,
+  usernameCheckLimiter,
+  loginIpLimiter,
+  loginAccountLimiter,
+} from "../middleware/rateLimiters";
 
 const router = Router();
 
-router.post("/signup/start", signupStart);
-router.post("/signup/verify", signupVerify);
-router.post("/signup/resend", signupResend);
-router.post("/signup/complete", signupComplete);
-router.get("/username-available", usernameAvailable);
-router.post("/login", login);
+router.post("/signup/start", signupStartIpLimiter, signupStartDailyLimiter, signupStart);
+router.post("/signup/verify", verifyIpLimiter, signupVerify);
+router.post("/signup/resend", resendIpLimiter, signupResend);
+router.post("/signup/complete", verifyIpLimiter, signupComplete);
+router.get("/username-available", usernameCheckLimiter, usernameAvailable);
+router.post("/login", loginIpLimiter, loginAccountLimiter, login);
 router.get("/me", authMiddleware, getMe); // protected, requires a valid JWT
 
 export default router;
