@@ -29,6 +29,7 @@ import Button from "../components/ui/Button";
 import GlowNode from "../components/ui/GlowNode";
 import { gameRegistry, isGameType } from "../config/gameRegistry";
 import { gameIconMap } from "../config/gameIconMap";
+import { socket } from "../lib/socket";
 
 // ─── Animation variants ───────────────────────────────────────────────────────
 const fadeUp = {
@@ -43,16 +44,6 @@ const stagger = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Mock room-code generator — 6 uppercase alphanumeric characters.
- *  TODO: replace with the code returned by POST /api/rooms/create */
-function generateCode(): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous 0/O/1/I
-  return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-}
-
-// ─── Mock wait delay (ms) ────────────────────────────────────────────────────
-const MOCK_WAIT_DELAY_MS = 4000;
-
 // ─── Clipboard / Share helpers ────────────────────────────────────────────────
 type CopyTarget = "code" | "link";
 
@@ -60,24 +51,13 @@ type CopyTarget = "code" | "link";
 export default function InviteScreen() {
   const { gameType } = useParams<{ gameType: string }>();
   const navigate     = useNavigate();
-  const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const roomIdRef    = useRef<string | null>(null);
 
-  // TODO: derive roomCode from POST /api/rooms/create response, not client-side random
-  const [roomCode] = useState<string>(() => generateCode());
+  const [roomCode, setRoomCode] = useState("");
+  const [roomError, setRoomError] = useState<string | null>(null);
   const [copiedTarget, setCopiedTarget] = useState<CopyTarget | null>(null);
 
-  if (!isGameType(gameType)) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
-        <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
-        <button onClick={() => navigate("/")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
-          Back to Dashboard
-        </button>
-      </div>
-    );
-  }
-
-  const entry    = gameRegistry[gameType];
+  const entry = gameRegistry[isGameType(gameType) ? gameType : "sorting"];
   const GameIcon = gameIconMap[entry.iconName];
 
   // Share link uses window.location.origin so it works on any domain/port
@@ -97,7 +77,7 @@ export default function InviteScreen() {
 
   const handleShare = useCallback(async () => {
     // Use the native Web Share API when available (mobile browsers, PWA)
-    if (navigator.share) {
+    if (typeof navigator.share === "function") {
       try {
         await navigator.share({
           title: `Join me in ${entry.title} on AlgoMind!`,
@@ -114,26 +94,47 @@ export default function InviteScreen() {
   }, [entry.title, roomCode, shareLink, handleCopy]);
 
   const handleCancel = () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    // TODO: emit socket.emit("cancel-room", { roomCode }) here
+    if (roomIdRef.current) socket.emit("cancel_room", { roomId: roomIdRef.current });
     navigate(`/game/${gameType}/friends`);
   };
 
-  // ── Mock "opponent joined" wait ───────────────────────────────────────────
   useEffect(() => {
-    // TODO: REPLACE with real Socket.io listener:
-    //   socket.emit("host-room", { roomCode });
-    //   socket.on("opponent-joined", ({ roomId }) => navigate(`/game/${gameType}/match/${roomId}`));
-    timerRef.current = setTimeout(() => {
-      // TODO: replace "mock-room-id" with the real roomId from the socket "opponent-joined" event
-      navigate(`/game/${gameType}/match/mock-room-id`);
-    }, MOCK_WAIT_DELAY_MS);
+    if (!isGameType(gameType)) return;
+    const onRoomCreated = ({ roomId, code }: { roomId: string; code: string }) => {
+      roomIdRef.current = roomId;
+      setRoomCode(code);
+      setRoomError(null);
+    };
+    const onOpponentJoined = ({ roomId }: { roomId: string }) => {
+      roomIdRef.current = null;
+      navigate(`/game/${gameType}/match/${roomId}`);
+    };
+    const onRoomError = ({ message }: { message: string }) => setRoomError(message);
+
+    socket.on("room_created", onRoomCreated);
+    socket.on("opponent_joined", onOpponentJoined);
+    socket.on("sorting_room_error", onRoomError);
+    if (!socket.connected) socket.connect();
+    socket.emit("create_room", { gameType });
 
     return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      // TODO: socket.off("opponent-joined"); socket.emit("cancel-room", { roomCode });
+      socket.off("room_created", onRoomCreated);
+      socket.off("opponent_joined", onOpponentJoined);
+      socket.off("sorting_room_error", onRoomError);
+      if (roomIdRef.current) socket.emit("cancel_room", { roomId: roomIdRef.current });
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [gameType, navigate]);
+
+  if (!isGameType(gameType)) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
+        <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
+        <button onClick={() => navigate("/")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
+          Back to Dashboard
+        </button>
+      </div>
+    );
+  }
 
   return (
     <motion.div
@@ -170,6 +171,7 @@ export default function InviteScreen() {
             <h1 className="font-sans text-xl font-bold text-textPrimary">Invite a Friend</h1>
             <p className="text-sm text-textMuted">Share this code or link to start a match</p>
           </div>
+          {roomError && <p role="alert" className="text-sm text-error">{roomError}</p>}
 
           {/* Room code display */}
           <div className="flex flex-col items-center gap-3 w-full">
@@ -185,7 +187,7 @@ export default function InviteScreen() {
                 className="font-mono text-4xl font-bold tracking-[0.25em] text-node"
                 aria-hidden="true"
               >
-                {roomCode}
+                {roomCode || "------"}
               </span>
             </motion.div>
           </div>
@@ -221,7 +223,7 @@ export default function InviteScreen() {
               transition={{ type: "spring", stiffness: 380, damping: 22 }}
               onClick={handleShare}
               className="w-full flex items-center justify-center gap-2 rounded-lg border border-panelBorder bg-background px-4 py-3 text-sm font-medium text-textPrimary hover:border-gold/50 hover:bg-gold/5 transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold"
-              aria-label={typeof navigator !== "undefined" && navigator.share ? "Share invite link" : "Copy invite link to clipboard"}
+              aria-label={typeof navigator !== "undefined" && typeof navigator.share === "function" ? "Share invite link" : "Copy invite link to clipboard"}
             >
               {copiedTarget === "link" ? (
                 <>
@@ -232,7 +234,7 @@ export default function InviteScreen() {
                 <>
                   <Share2 size={15} className="text-gold" aria-hidden="true" />
                   <span className="text-gold">
-                    {typeof navigator !== "undefined" && navigator.share ? "Share Link" : "Copy Link"}
+                    {typeof navigator !== "undefined" && typeof navigator.share === "function" ? "Share Link" : "Copy Link"}
                   </span>
                 </>
               )}

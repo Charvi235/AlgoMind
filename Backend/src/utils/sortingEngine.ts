@@ -28,6 +28,22 @@ export interface SortRound {
   finalArr: SortItem[];
 }
 
+export function publicSortStep(step: SortStep | undefined): Omit<SortStep, "answer"> | null {
+  if (!step) return null;
+  const visibleStep: Omit<SortStep, "answer"> = {
+    kind: step.kind,
+    arr: step.arr.map(({ id, value }) => ({ id, value })),
+    focus: [...step.focus],
+    sorted: [...step.sorted],
+  };
+  if (step.range) visibleStep.range = [...step.range];
+  if (step.prompt !== undefined) visibleStep.prompt = step.prompt;
+  if (step.choices) {
+    visibleStep.choices = step.choices.map(({ value, label }) => ({ value, label }));
+  }
+  return visibleStep;
+}
+
 const range = (from: number, to: number): number[] =>
   Array.from({ length: Math.max(0, to - from + 1) }, (_, index) => from + index);
 

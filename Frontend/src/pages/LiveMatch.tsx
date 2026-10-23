@@ -1,173 +1,160 @@
-/**
- * LiveMatch.tsx
- *
- * Route: /game/:gameType/match/:roomId
- *
- * Thin wrapper around GameSessionShell for live (multiplayer) mode.
- * Reads gameType and roomId from the URL, renders the shell in live mode,
- * and navigates to ResultsScreen with both players' final stats when the
- * session ends.
- *
- * ─── TODO: REAL SOCKET.IO INTEGRATION ────────────────────────────────────────
- *
- * The following mock behaviours need replacing with real Socket.io calls:
- *
- * 1. JOINING THE ROOM
- *    On mount, emit:
- *      socket.emit("join-room", { roomId, gameType })
- *    Listen for a confirmation:
- *      socket.on("room-joined", ({ players }) => { ... })
- *    Use the returned player list to populate opponentLabel.
- *
- * 2. SYNCED START SIGNAL
- *    The session timer should NOT start until both players are ready.
- *    Listen for:
- *      socket.on("match-start", () => { setReady(true) })
- *    Pass a `ready` flag to GameSessionShell (add a prop) to hold the
- *    timer at SESSION_SECONDS until the server fires this event.
- *
- * 3. OPPONENT SCORE UPDATES
- *    The mock opponent ticker inside GameSessionShell should be replaced
- *    entirely. Instead, pass opponentScore as a controlled prop:
- *      socket.on("opponent-score-update", ({ score }) => setOpponentScore(score))
- *    Add an `opponentScore` prop to GameSessionShell and display it from
- *    the parent rather than managing it internally.
- *
- * 4. SYNCED END-OF-MATCH
- *    Replace the local 60-second timer expiry with a server-fired event:
- *      socket.on("match-end", ({ playerStats, opponentStats }) => { ... })
- *    Use the server-provided stats to build LiveSessionStats and navigate.
- *    The local timer can be kept as a fallback / visual display only.
- *
- * 5. CLEANUP
- *    On component unmount:
- *      socket.emit("leave-room", { roomId })
- *      socket.off("match-start")
- *      socket.off("opponent-score-update")
- *      socket.off("match-end")
- *
- * ─────────────────────────────────────────────────────────────────────────────
- */
-
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ArrowLeft } from "lucide-react";
-import GameSessionShell, { type SessionEndStats } from "../components/GameSessionShell";
-import { computeXP } from "../types/session";
-import type { LiveSessionStats } from "../types/session";
+import GameSessionShell from "../components/GameSessionShell";
+import Button from "../components/ui/Button";
+import { socket } from "../lib/socket";
 import { isGameType } from "../config/gameRegistry";
+import type { LiveSessionStats, PlayerResult } from "../types/session";
 
-// ─── Mock opponent label ───────────────────────────────────────────────────────
-// TODO: replace with the real opponent display name received from the server
-// via the "room-joined" socket event.
-const MOCK_OPPONENT_LABEL = "Opponent";
-
-// ─── Mock opponent round count ────────────────────────────────────────────────
-// TODO: replace with the opponentStats received in the "match-end" socket event.
-function mockOpponentStats(playerRounds: number): {
+interface MatchPlayer {
+  socketId: string;
   roundsCompleted: number;
   correctCount: number;
   accuracy: number;
-} {
-  const rounds   = Math.max(0, playerRounds + Math.floor(Math.random() * 3) - 1);
-  const correct  = rounds * (5 + Math.floor(Math.random() * 5));
-  const accuracy = rounds > 0 ? Math.min(100, 60 + Math.floor(Math.random() * 40)) : 0;
-  return { roundsCompleted: rounds, correctCount: correct, accuracy };
+  score: number;
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+interface MatchEndPayload {
+  players: MatchPlayer[];
+  winnerSocketId: string | null;
+}
+
 export default function LiveMatch() {
   const { gameType, roomId } = useParams<{ gameType: string; roomId: string }>();
-  const navigate             = useNavigate();
+  const navigate = useNavigate();
+  const [ready, setReady] = useState(false);
+  const [matchError, setMatchError] = useState<string | null>(null);
+  const opponentLabel = "Opponent";
+  const isSortingMatch = gameType === "sorting" && Boolean(roomId);
+
+  useEffect(() => {
+    if (!isSortingMatch || !roomId) return;
+
+    const joinMatch = () => socket.emit("join_match", { roomId });
+    const onJoined = ({ status }: { roomId: string; status: "waiting" | "active" }) => {
+      if (status !== "active") {
+        setMatchError("Waiting for the other player to join.");
+        return;
+      }
+      setMatchError(null);
+      setReady(true);
+    };
+    const onRoomError = ({ message }: { message: string }) => {
+      setReady(false);
+      setMatchError(message);
+    };
+    const onOpponentLeft = () => {
+      setReady(false);
+      setMatchError("Your friend left the match.");
+    };
+    const onMatchEnd = ({ players, winnerSocketId }: MatchEndPayload) => {
+      const self = players.find((player) => player.socketId === socket.id);
+      const opponent = players.find((player) => player.socketId !== socket.id);
+      if (!self || !opponent) {
+        setMatchError("The match ended, but its result could not be loaded.");
+        setReady(false);
+        return;
+      }
+
+      const result = (player: MatchPlayer, label: string): PlayerResult => ({
+        label,
+        roundsCompleted: player.roundsCompleted,
+        correctCount: player.correctCount,
+        accuracy: player.accuracy,
+        xp: player.score,
+      });
+      const stats: LiveSessionStats = {
+        mode: "live",
+        gameType: "sorting",
+        roomId,
+        player: result(self, "You"),
+        opponent: result(opponent, opponentLabel),
+        winner: winnerSocketId === null
+          ? "tie"
+          : winnerSocketId === socket.id
+            ? "player"
+            : "opponent",
+      };
+      navigate(`/game/sorting/results`, { state: stats });
+    };
+
+    socket.on("sorting_room_joined", onJoined);
+    socket.on("sorting_room_error", onRoomError);
+    socket.on("opponent_left", onOpponentLeft);
+    socket.on("sorting_match_end", onMatchEnd);
+    socket.on("connect", joinMatch);
+    if (socket.connected) joinMatch();
+    else socket.connect();
+
+    return () => {
+      socket.off("sorting_room_joined", onJoined);
+      socket.off("sorting_room_error", onRoomError);
+      socket.off("opponent_left", onOpponentLeft);
+      socket.off("sorting_match_end", onMatchEnd);
+      socket.off("connect", joinMatch);
+    };
+  }, [isSortingMatch, navigate, opponentLabel, roomId]);
 
   if (!isGameType(gameType)) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
         <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
-        <button
-          onClick={() => navigate("/")}
-          className="text-sm text-textMuted underline hover:text-textPrimary transition-colors"
-        >
+        <button onClick={() => navigate("/")} className="text-sm text-textMuted underline">
           Back to Dashboard
         </button>
       </div>
     );
   }
 
-  const resolvedRoomId = roomId ?? "unknown";
-
-  const handleSessionEnd = (raw: SessionEndStats) => {
-    // TODO: replace mockOpponentStats with real stats from the "match-end" socket event
-    const oppRaw = mockOpponentStats(raw.roundsCompleted);
-
-    const playerResult = {
-      label:           "You",
-      roundsCompleted: raw.roundsCompleted,
-      correctCount:    raw.correctCount,
-      accuracy:        raw.accuracy,
-      xp:              computeXP(raw.roundsCompleted, raw.accuracy),
-    };
-
-    const opponentResult = {
-      label:           MOCK_OPPONENT_LABEL,
-      roundsCompleted: oppRaw.roundsCompleted,
-      correctCount:    oppRaw.correctCount,
-      accuracy:        oppRaw.accuracy,
-      xp:              computeXP(oppRaw.roundsCompleted, oppRaw.accuracy),
-    };
-
-    const winner: LiveSessionStats["winner"] =
-      playerResult.roundsCompleted > opponentResult.roundsCompleted ? "player" :
-      playerResult.roundsCompleted < opponentResult.roundsCompleted ? "opponent" :
-      "tie";
-
-    const stats: LiveSessionStats = {
-      mode:     "live",
-      gameType,
-      roomId:   resolvedRoomId,
-      player:   playerResult,
-      opponent: opponentResult,
-      winner,
-    };
-
-    navigate(`/game/${gameType}/results`, { state: stats });
+  const leaveMatch = () => {
+    socket.emit("leave_match");
+    navigate(`/game/${gameType}/friends`);
   };
 
   return (
     <motion.div
       className="flex flex-col gap-4"
       initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0  }}
-      exit={{    opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.25, ease: "easeInOut" }}
     >
-      {/* Back / abandon link */}
-      <motion.button
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.15 }}
-        onClick={() => navigate(`/game/${gameType}/friends`)}
-        className="flex items-center gap-1.5 w-fit text-sm text-textMuted hover:text-textPrimary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-node rounded"
+      <button
+        onClick={leaveMatch}
+        className="flex items-center gap-1.5 w-fit text-sm text-textMuted hover:text-textPrimary"
         aria-label="Leave match"
       >
         <ArrowLeft size={15} aria-hidden="true" />
         Leave match
-      </motion.button>
+      </button>
 
-      {/* Room ID pill */}
       <div className="flex items-center gap-2">
         <span className="text-xs text-textMuted">Room:</span>
         <span className="font-mono text-xs text-node border border-panelBorder bg-panel rounded px-2 py-0.5">
-          {resolvedRoomId}
+          {roomId}
         </span>
       </div>
 
-      <GameSessionShell
-        gameType={gameType}
-        mode="live"
-        opponentLabel={MOCK_OPPONENT_LABEL}
-        onSessionEnd={handleSessionEnd}
-      />
+      {(isSortingMatch ? matchError : "Live matches are currently available for Sorting Showdown only.") && (
+        <div className="flex flex-col items-center gap-3 py-10">
+          <p role="status" className="text-sm text-textMuted">
+            {isSortingMatch ? matchError : "Live matches are currently available for Sorting Showdown only."}
+          </p>
+          {!ready && <Button variant="secondary" onClick={leaveMatch}>Back to Play with Friends</Button>}
+        </div>
+      )}
+
+      {ready && (
+        <GameSessionShell
+          gameType={gameType}
+          mode="live"
+          roomId={roomId}
+          opponentLabel={opponentLabel}
+          onSessionEnd={() => {}}
+        />
+      )}
     </motion.div>
   );
 }

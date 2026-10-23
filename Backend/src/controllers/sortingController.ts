@@ -1,23 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { randomUUID } from "crypto";
 import SortingMatch from "../models/SortingMatch";
-import { generateSortRound, type SortStep } from "../utils/sortingEngine";
-
-export function publicStep(step: SortStep | undefined): Omit<SortStep, "answer"> | null {
-  if (!step) return null;
-  const visibleStep: Omit<SortStep, "answer"> = {
-    kind: step.kind,
-    arr: step.arr.map(({ id, value }) => ({ id, value })),
-    focus: [...step.focus],
-    sorted: [...step.sorted],
-  };
-  if (step.range) visibleStep.range = [...step.range];
-  if (step.prompt !== undefined) visibleStep.prompt = step.prompt;
-  if (step.choices) {
-    visibleStep.choices = step.choices.map(({ value, label }) => ({ value, label }));
-  }
-  return visibleStep;
-}
+import { generateSortRound, publicSortStep } from "../utils/sortingEngine";
 
 export async function createSortingRound(req: Request, res: Response, next: NextFunction) {
   try {
@@ -41,7 +25,7 @@ export async function createSortingRound(req: Request, res: Response, next: Next
       algo: generated.algo,
       stepIndex: 0,
       totalSteps: generated.steps.length,
-      step: publicStep(generated.steps[0]),
+      step: publicSortStep(generated.steps[0]),
       completed: generated.steps.length === 0,
     });
   } catch (error) {
@@ -89,7 +73,7 @@ export async function validateSortingStep(req: Request, res: Response, next: Nex
       completed: match.completed,
       stepIndex: match.stepIndex,
       totalSteps: match.steps.length,
-      step: correct ? publicStep(match.steps[match.stepIndex]) : publicStep(currentStep),
+      step: correct ? publicSortStep(match.steps[match.stepIndex]) : publicSortStep(currentStep),
       finalArr: match.completed ? match.finalArr : undefined,
     });
   } catch (error) {

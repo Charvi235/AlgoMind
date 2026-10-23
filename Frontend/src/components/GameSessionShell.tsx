@@ -20,6 +20,7 @@ import { Box } from "lucide-react";
 import { gameRegistry, isGameType, type GameType } from "../config/gameRegistry";
 import { gameIconMap } from "../config/gameIconMap";
 import type { RoundCompletePayload } from "../types/session";
+import { socket } from "../lib/socket";
 
 // ─── Board component map ───────────────────────────────────────────────────────
 // Lazily import each board. We use a plain object lookup so the shell never
@@ -68,6 +69,7 @@ export interface SessionEndStats {
 export interface GameSessionShellProps {
   gameType:      string;
   mode:          "solo" | "live";
+  roomId?:       string;
   /**
    * For live mode — display name / identifier for the opponent.
    * Shown in the score bar next to the opponent's score.
@@ -94,24 +96,17 @@ const formatCountdown = (s: number) => `${fmt2(Math.floor(s / 60))}:${fmt2(s % 6
 export default function GameSessionShell({
   gameType,
   mode,
+  roomId,
   opponentLabel = "Opponent",
   onSessionEnd,
 }: GameSessionShellProps) {
-  // ── Validate gameType ──────────────────────────────────────────────────────
-  if (!isGameType(gameType)) {
-    return (
-      <div className="flex items-center justify-center py-24">
-        <p className="text-textMuted text-sm">Unknown game type: {gameType}</p>
-      </div>
-    );
-  }
-
-  const entry    = gameRegistry[gameType];
-  const GameIcon = gameIconMap[entry.iconName] ?? Box;
-  const Board    = BOARD_MAP[gameType];
+  const entry = isGameType(gameType) ? gameRegistry[gameType] : null;
+  const Board = isGameType(gameType) ? BOARD_MAP[gameType] : null;
 
   // ── Timer ──────────────────────────────────────────────────────────────────
-  const [timeLeft, setTimeLeft] = useState(SESSION_SECONDS_BY_GAME[gameType] ?? DEFAULT_SESSION_SECONDS);
+  const [timeLeft, setTimeLeft] = useState(
+    isGameType(gameType) ? SESSION_SECONDS_BY_GAME[gameType] ?? DEFAULT_SESSION_SECONDS : DEFAULT_SESSION_SECONDS
+  );
   const timerRunning = useRef(true);
 
   // ── Round & score tracking ─────────────────────────────────────────────────
@@ -156,11 +151,15 @@ export default function GameSessionShell({
       });
     }, 1000);
     return () => clearInterval(id);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ── Opponent mock score ticker (TODO: replace with socket) ────────────────
   useEffect(() => {
     if (mode !== "live") return;
+    if (gameType === "sorting") {
+      const onProgress = ({ score }: { score: number }) => setOpponentScore(score);
+      socket.on("opponent_progress", onProgress);
+      return () => socket.off("opponent_progress", onProgress);
+    }
     const id = setInterval(() => {
       // TODO: REMOVE this mock and replace with:
       //   socket.on("opponent-score-update", ({ score }) => setOpponentScore(score))
@@ -170,19 +169,34 @@ export default function GameSessionShell({
       );
     }, MOCK_OPPONENT_TICK_MS);
     return () => clearInterval(id);
-  }, [mode]);
+  }, [mode, gameType]);
 
   // ── Round-complete callback (called by the active Board) ──────────────────
   const handleRoundComplete = useCallback((payload: RoundCompletePayload) => {
     setCorrectTotal((c) => c + payload.correctActions);
     setTotalActions((t) => t + payload.totalActions);
     setPlayerScore((s) => s + payload.correctActions * 10);
+    if (mode === "live" && gameType === "sorting") return;
     // Brief pause so the player sees their last action, then advance round
     setTimeout(() => {
       setRound((r) => r + 1);
       setBoardKey((k) => k + 1); // remount Board with fresh state
     }, 800);
+  }, [gameType, mode]);
+
+  const handleLiveRoundChange = useCallback((nextRound: number) => {
+    setRound(nextRound);
   }, []);
+
+  if (!entry || !Board) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <p className="text-textMuted text-sm">Unknown game type: {gameType}</p>
+      </div>
+    );
+  }
+
+  const GameIcon = gameIconMap[entry.iconName] ?? Box;
 
   // ── Timer colour ──────────────────────────────────────────────────────────
   const timerColor =
@@ -284,6 +298,9 @@ export default function GameSessionShell({
         <Board
   key={boardKey}
   round={round}
+  mode={mode}
+  roomId={roomId}
+  onRoundChange={mode === "live" ? handleLiveRoundChange : undefined}
   onRoundComplete={handleRoundComplete}
 />
       ) : (

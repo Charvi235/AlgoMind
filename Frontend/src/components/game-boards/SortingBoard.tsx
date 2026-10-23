@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, ArrowLeftRight, Equal } from "lucide-react";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
+import { socket } from "../../lib/socket";
 import type { RoundCompletePayload } from "../../types/session";
 import {
   ALGO_INFO,
@@ -26,6 +27,9 @@ const MAX_BAR = 170;
 
 export interface SortingBoardProps {
   round?: number;
+  mode?: "solo" | "live";
+  roomId?: string;
+  onRoundChange?: (round: number) => void;
   onRoundComplete?: (payload: RoundCompletePayload) => void;
   onReset?: () => void;
 }
@@ -65,7 +69,14 @@ async function submitAnswer(
   return response.json();
 }
 
-export default function SortingBoard({ round, onRoundComplete, onReset }: SortingBoardProps) {
+export default function SortingBoard({
+  round,
+  mode = "solo",
+  roomId,
+  onRoundChange,
+  onRoundComplete,
+  onReset,
+}: SortingBoardProps) {
   const [standaloneRound, setStandaloneRound] = useState(1);
   const activeRound = round ?? standaloneRound;
   const [game, setGame] = useState<ActiveSortRound | null>(null);
@@ -79,6 +90,7 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
   const reported = useRef(false);
 
   useEffect(() => {
+    if (mode === "live") return;
     let cancelled = false;
 
     fetchRound(activeRound)
@@ -97,7 +109,63 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
     return () => {
       cancelled = true;
     };
-  }, [activeRound, reload]);
+  }, [activeRound, reload, mode]);
+
+  useEffect(() => {
+    if (mode !== "live" || !roomId) return;
+
+    const requestState = () => socket.emit("request_sorting_state");
+    const handleRound = (data: { round: number }) => {
+      onRoundChange?.(data.round);
+      requestState();
+    };
+    const handleState = (data: {
+      roomId: string;
+      round: number;
+      algo: SortAlgo;
+      totalSteps: number;
+      stepIndex: number;
+      step: ActiveSortRound["step"];
+      completed: boolean;
+      finalArr?: ActiveSortRound["finalArr"];
+    }) => {
+      if (data.roomId !== roomId) return;
+      reported.current = false;
+      setLoadError(null);
+      setGame({
+        roundId: roomId,
+        algo: data.algo,
+        stepIndex: data.stepIndex,
+        totalSteps: data.totalSteps,
+        step: data.step,
+        completed: data.completed,
+        finalArr: data.finalArr,
+      });
+      setLoading(false);
+      setValidating(false);
+      setErrorIdx([]);
+      setMistakes(0);
+      onRoundChange?.(data.round);
+    };
+    const handleSocketError = ({ message }: { message: string }) => {
+      setLoadError(message);
+      setLoading(false);
+      setValidating(false);
+    };
+
+    socket.on("sorting_match_start", handleRound);
+    socket.on("sorting_round_data", handleRound);
+    socket.on("sorting_round_state", handleState);
+    socket.on("sorting_room_error", handleSocketError);
+    socket.emit("request_sorting_state");
+
+    return () => {
+      socket.off("sorting_match_start", handleRound);
+      socket.off("sorting_round_data", handleRound);
+      socket.off("sorting_round_state", handleState);
+      socket.off("sorting_room_error", handleSocketError);
+    };
+  }, [mode, roomId, onRoundChange]);
 
   const step = game?.step ?? null;
   const done = game?.completed ?? false;
@@ -131,6 +199,44 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
   const handleAnswer = useCallback(async (answer: boolean | number | string) => {
     if (!game || !step || validating || done) return;
     setValidating(true);
+    if (mode === "live") {
+      const onResult = (result: {
+        correct: boolean;
+        roomId: string;
+        round: number;
+        algo: SortAlgo;
+        totalSteps: number;
+        stepIndex: number;
+        step: ActiveSortRound["step"];
+        completed: boolean;
+        finalArr?: ActiveSortRound["finalArr"];
+      }) => {
+        socket.off("sorting_step_result", onResult);
+        clearTimeout(timeout);
+        setValidating(false);
+        if (result.roomId !== roomId) return;
+        setLoadError(null);
+        setGame({
+          roundId: roomId ?? "",
+          algo: result.algo,
+          stepIndex: result.stepIndex,
+          totalSteps: result.totalSteps,
+          step: result.step,
+          completed: result.completed,
+          finalArr: result.finalArr,
+        });
+        if (!result.correct) flashError(step.focus);
+        else setErrorIdx([]);
+      };
+      const timeout = setTimeout(() => {
+        socket.off("sorting_step_result", onResult);
+        setValidating(false);
+        setLoadError("The server did not respond. Please try that step again.");
+      }, 5000);
+      socket.on("sorting_step_result", onResult);
+      socket.emit("submit_sorting_step", { answer });
+      return;
+    }
     try {
       const result = await submitAnswer(game.roundId, answer);
       setLoadError(null);
@@ -150,7 +256,7 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
     } finally {
       setValidating(false);
     }
-  }, [game, step, validating, done, flashError]);
+  }, [game, step, validating, done, flashError, mode, roomId]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -172,6 +278,7 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
     setGame(null);
     setMistakes(0);
     setErrorIdx([]);
+    if (mode === "live") return;
     if (round === undefined) setStandaloneRound((current) => current + 1);
     else setReload((current) => current + 1);
     onReset?.();
@@ -205,8 +312,8 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
   if (loadError && !game) {
     return (
       <div className="flex flex-col items-center gap-3 py-12">
-        <p className="text-sm text-error">{loadError}</p>
-        <Button variant="secondary" onClick={handleRetry}>Try again</Button>
+        <p role="alert" className="text-sm text-error">{loadError}</p>
+        {mode === "solo" && <Button variant="secondary" onClick={handleRetry}>Try again</Button>}
       </div>
     );
   }
@@ -341,7 +448,11 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
               <p className="text-xs text-textMuted">
                 {total} steps · {mistakes} mistake{mistakes === 1 ? "" : "s"}
               </p>
-              {!onRoundComplete && <Button variant="primary" onClick={handleNext}>Next array</Button>}
+              {mode === "live" ? (
+                <p className="text-xs text-textMuted">Waiting for your friend to finish this round…</p>
+              ) : (
+                !onRoundComplete && <Button variant="primary" onClick={handleNext}>Next array</Button>
+              )}
             </Card>
           </motion.div>
         )}

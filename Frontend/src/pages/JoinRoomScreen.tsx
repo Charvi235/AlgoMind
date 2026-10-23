@@ -28,6 +28,7 @@ import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import { gameRegistry, isGameType } from "../config/gameRegistry";
 import { gameIconMap } from "../config/gameIconMap";
+import { socket } from "../lib/socket";
 
 // ─── Animation variants ───────────────────────────────────────────────────────
 const fadeUp = {
@@ -70,6 +71,7 @@ export default function JoinRoomScreen({ initialCode: propCode }: JoinRoomScreen
   const [codeError, setCodeError] = useState<string | null>(null);
   const [joining,   setJoining]   = useState(false);
   const inputRef                  = useRef<HTMLInputElement>(null);
+  const cleanupJoinRef            = useRef<() => void>(() => {});
 
   // Determine back destination — if gameType is present use game friends page, else home
   const backTo = isGameType(gameType) ? `/game/${gameType}/friends` : "/";
@@ -84,38 +86,53 @@ export default function JoinRoomScreen({ initialCode: propCode }: JoinRoomScreen
 
     setCodeError(null);
     setJoining(true);
+    cleanupJoinRef.current();
 
-    // TODO: REPLACE this mock with a real API call:
-    //   try {
-    //     const { data } = await axios.post("/api/rooms/join", { code: trimmed });
-    //     navigate(`/game/${data.gameType}/match/${data.roomId}`);
-    //   } catch (err) {
-    //     setCodeError("Room not found or has expired. Check the code and try again.");
-    //   } finally {
-    //     setJoining(false);
-    //   }
-
-    // Mock: accept any 6-char code and navigate to stub match
-    // The `gameType` in the URL may be undefined when arriving via /join/:roomCode,
-    // so fall back to a placeholder segment — the real API response will supply the type.
-    await new Promise((r) => setTimeout(r, 600)); // simulate network latency
-    // TODO: replace "mock-room-id" with the real roomId from the API response
-    const resolvedGameType = isGameType(gameType) ? gameType : "dijkstra"; // TODO: get from API
-    navigate(`/game/${resolvedGameType}/match/mock-room-id`);
-    setJoining(false);
-  }, [gameType, navigate]);
+    const onJoined = (data: { roomId: string; gameType: string }) => {
+      cleanupJoinRef.current();
+      setJoining(false);
+      navigate(`/game/${data.gameType}/match/${data.roomId}`);
+    };
+    const onRoomError = ({ message }: { message: string }) => {
+      cleanupJoinRef.current();
+      setJoining(false);
+      setCodeError(message);
+    };
+    cleanupJoinRef.current = () => {
+      socket.off("room_joined", onJoined);
+      socket.off("sorting_room_error", onRoomError);
+    };
+    socket.on("room_joined", onJoined);
+    socket.on("sorting_room_error", onRoomError);
+    if (!socket.connected) socket.connect();
+    socket.emit("join_room", { code: trimmed });
+  }, [navigate]);
 
   // Focus input on mount
   useEffect(() => {
     if (!autoSubmit) inputRef.current?.focus();
-  }, []);
+  }, [autoSubmit]);
+
+  useEffect(() => () => cleanupJoinRef.current(), []);
 
   // Auto-submit when a pre-filled code is passed (deep-link flow)
   useEffect(() => {
-    if (autoSubmit && seedCode.length === 6) {
-      handleJoin(seedCode);
-    }
-  }, [autoSubmit]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!autoSubmit || seedCode.length !== 6) return;
+    const onJoined = (data: { roomId: string; gameType: string }) => {
+      navigate(`/game/${data.gameType}/match/${data.roomId}`);
+    };
+    const onRoomError = ({ message }: { message: string }) => setCodeError(message);
+
+    socket.on("room_joined", onJoined);
+    socket.on("sorting_room_error", onRoomError);
+    if (!socket.connected) socket.connect();
+    socket.emit("join_room", { code: seedCode.toUpperCase() });
+
+    return () => {
+      socket.off("room_joined", onJoined);
+      socket.off("sorting_room_error", onRoomError);
+    };
+  }, [autoSubmit, navigate, seedCode]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);

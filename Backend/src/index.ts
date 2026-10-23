@@ -6,6 +6,7 @@ import { Server as SocketIOServer } from "socket.io";
 import { connectDB } from "./config/db";
 import { errorHandler } from "./middleware/errorHandler";
 import sortingRoutes from "./routes/sortingRoutes";
+import { registerSortingSocketHandlers } from "./sockets/sortingSocketHandlers";
 
 dotenv.config();
 
@@ -30,6 +31,7 @@ const server = http.createServer(app);
 export const io = new SocketIOServer(server, {
   cors: { origin: CLIENT_URL, credentials: true },
 });
+registerSortingSocketHandlers(io);
 
 async function start() {
   await connectDB();

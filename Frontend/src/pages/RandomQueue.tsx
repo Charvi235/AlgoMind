@@ -19,7 +19,7 @@
  * ────────────────────────────────────────────────────────────────────────────
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft } from "lucide-react";
@@ -28,6 +28,7 @@ import Button from "../components/ui/Button";
 import GlowNode from "../components/ui/GlowNode";
 import { gameRegistry, isGameType } from "../config/gameRegistry";
 import { gameIconMap } from "../config/gameIconMap";
+import { socket } from "../lib/socket";
 
 // ─── Animation variants ───────────────────────────────────────────────────────
 const fadeUp = {
@@ -44,15 +45,38 @@ const stagger = {
 // Three concentric rings expand outward and fade, giving a "sonar" feel.
 const RING_COUNT = 3;
 
-// ─── Mock match delay (ms) ───────────────────────────────────────────────────
-const MOCK_MATCH_DELAY_MS = 3000;
-
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function RandomQueue() {
   const { gameType } = useParams<{ gameType: string }>();
   const navigate     = useNavigate();
-  const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [cancelled, setCancelled] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+
+  const entry = gameRegistry[isGameType(gameType) ? gameType : "sorting"];
+  const GameIcon = gameIconMap[entry.iconName];
+
+  const handleCancel = () => {
+    socket.emit("leave_queue");
+    navigate(`/game/${gameType}/friends`);
+  };
+
+  useEffect(() => {
+    if (!isGameType(gameType)) return;
+    const onMatched = ({ roomId, gameType: matchedGame }: { roomId: string; gameType: string }) => {
+      navigate(`/game/${matchedGame}/match/${roomId}`);
+    };
+    const onRoomError = ({ message }: { message: string }) => setQueueError(message);
+
+    socket.on("matched", onMatched);
+    socket.on("sorting_room_error", onRoomError);
+    if (!socket.connected) socket.connect();
+    socket.emit("join_queue", { gameType });
+
+    return () => {
+      socket.off("matched", onMatched);
+      socket.off("sorting_room_error", onRoomError);
+      socket.emit("leave_queue");
+    };
+  }, [gameType, navigate]);
 
   if (!isGameType(gameType)) {
     return (
@@ -64,34 +88,6 @@ export default function RandomQueue() {
       </div>
     );
   }
-
-  const entry    = gameRegistry[gameType];
-  const GameIcon = gameIconMap[entry.iconName];
-
-  const handleCancel = () => {
-    setCancelled(true);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    // TODO: emit socket.emit("leave-queue", { gameType }) here
-    navigate(`/game/${gameType}/friends`);
-  };
-
-  // ── Mock matchmaking ─────────────────────────────────────────────────────
-  useEffect(() => {
-    // TODO: REPLACE THIS ENTIRE BLOCK with a real Socket.io flow:
-    //   socket.emit("join-queue", { gameType });
-    //   socket.on("matched", ({ roomId }) => navigate(`/game/${gameType}/match/${roomId}`));
-    timerRef.current = setTimeout(() => {
-      if (!cancelled) {
-        // TODO: replace "mock-room-id" with the real roomId from the socket "matched" event
-        navigate(`/game/${gameType}/match/mock-room-id`);
-      }
-    }, MOCK_MATCH_DELAY_MS);
-
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      // TODO: socket.off("matched"); socket.emit("leave-queue", { gameType });
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <motion.div
@@ -161,10 +157,10 @@ export default function RandomQueue() {
           {/* Status text */}
           <div className="flex flex-col gap-1.5">
             <p className="font-sans text-base font-semibold text-textPrimary">
-              Searching for an opponent…
+              {queueError ? "Could not join matchmaking" : "Searching for an opponent…"}
             </p>
             <p className="font-sans text-sm text-textMuted">
-              This usually takes a few seconds
+              {queueError ?? "This usually takes a few seconds"}
             </p>
           </div>
 
