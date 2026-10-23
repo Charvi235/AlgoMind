@@ -11,12 +11,26 @@
  */
 
 import { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Sparkles } from "lucide-react";
 import StarfieldBackground from "../components/StarfieldBackground";
 import Button from "../components/ui/Button";
 import { useAuth } from "../context/AuthContext";
+
+/** Returns state.from if it is a safe same-origin path, otherwise "/dashboard". */
+function safeFrom(state: unknown): string {
+  if (
+    state !== null &&
+    typeof state === "object" &&
+    "from" in state &&
+    typeof (state as { from: unknown }).from === "string"
+  ) {
+    const from = (state as { from: string }).from;
+    if (from.startsWith("/") && !from.startsWith("//")) return from;
+  }
+  return "/dashboard";
+}
 
 // ─── Google "G" SVG ──────────────────────────────────────────────────────────
 
@@ -107,6 +121,8 @@ function ThemedInput({ label, id, errorMessage, rightSlot, className = "", ...re
 export default function LoginPage() {
   const { user, login } = useAuth();
   const navigate        = useNavigate();
+  const location        = useLocation();
+  const destination     = safeFrom(location.state);
 
   const [identifier,   setIdentifier]   = useState("");
   const [password,     setPassword]     = useState("");
@@ -114,10 +130,10 @@ export default function LoginPage() {
   const [loading,      setLoading]      = useState(false);
   const [serverError,  setServerError]  = useState("");
 
-  // Already logged in — redirect without blocking the render.
+  // Already logged in — redirect to original destination or dashboard.
   useEffect(() => {
-    if (user) navigate("/dashboard", { replace: true });
-  }, [user, navigate]);
+    if (user) navigate(destination, { replace: true });
+  }, [user, navigate, destination]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -128,7 +144,7 @@ export default function LoginPage() {
 
     try {
       await login(identifier, password);
-      navigate("/dashboard", { replace: true });
+      navigate(destination, { replace: true });
     } catch (err) {
       setServerError(
         err instanceof Error

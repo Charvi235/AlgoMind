@@ -11,8 +11,22 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
+
+/** Returns state.from if it is a safe same-origin path, otherwise "/dashboard". */
+function safeFrom(state: unknown): string {
+  if (
+    state !== null &&
+    typeof state === "object" &&
+    "from" in state &&
+    typeof (state as { from: unknown }).from === "string"
+  ) {
+    const from = (state as { from: string }).from;
+    if (from.startsWith("/") && !from.startsWith("//")) return from;
+  }
+  return "/dashboard";
+}
 import { Eye, EyeOff, Sparkles, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import StarfieldBackground from "../components/StarfieldBackground";
 import Button from "../components/ui/Button";
@@ -155,12 +169,14 @@ type AvailState = "idle" | "checking" | "available" | "unavailable";
 
 export default function SignupPage() {
   const navigate            = useNavigate();
+  const location            = useLocation();
   const { setSession, user } = useAuth();
+  const destination         = safeFrom(location.state);
 
-  // Already logged in
+  // Already logged in — redirect to original destination or dashboard.
   useEffect(() => {
-    if (user) navigate("/dashboard", { replace: true });
-  }, [user, navigate]);
+    if (user) navigate(destination, { replace: true });
+  }, [user, navigate, destination]);
 
   // ── Shared state ───────────────────────────────────────────────────────────
   const [step,    setStep]    = useState<1 | 2 | 3>(1);
@@ -339,7 +355,7 @@ export default function SignupPage() {
         user:  { id: string; username: string; email: string; totalXP: number };
       }>("/api/auth/signup/complete", { email, signupToken, username });
       setSession(data.token, data.user);
-      navigate("/dashboard", { replace: true });
+      navigate(destination, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not complete signup.");
     } finally {

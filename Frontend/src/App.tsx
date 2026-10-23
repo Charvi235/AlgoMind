@@ -1,6 +1,7 @@
 import { Routes, Route, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import AppLayout from "./components/AppLayout";
+import AppLayout        from "./components/AppLayout";
+import ProtectedRoute   from "./components/ProtectedRoute";
 
 // ── Core pages ────────────────────────────────────────────────────────────────
 import Dashboard            from "./pages/Dashboard";
@@ -68,48 +69,72 @@ export default function App() {
           <PageWrapper><SignupPage /></PageWrapper>
         } />
 
-        {/* ── App pages — inside AppLayout (with Navbar) ─────────────── */}
+        {/* ── Protected pages — inside AppLayout (with Navbar) ────────── */}
         <Route path="/dashboard" element={
-          <AppLayout><PageWrapper><Dashboard /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><Dashboard /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
         <Route path="/leaderboard" element={
-          <AppLayout><PageWrapper><Leaderboard /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><Leaderboard /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
 
         {/* ── Shared game flow ─────────────────────────────────────────── */}
         <Route path="/game/:gameType" element={
-          <AppLayout><PageWrapper><GameModeSelect /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><GameModeSelect /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
         <Route path="/game/:gameType/solo" element={
-          <AppLayout><PageWrapper><SoloSession /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><SoloSession /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
         <Route path="/game/:gameType/match/:roomId" element={
-          <AppLayout><PageWrapper><LiveMatch /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><LiveMatch /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
         <Route path="/game/:gameType/results" element={
-          <AppLayout><PageWrapper><ResultsScreen /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><ResultsScreen /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
         <Route path="/game/:gameType/friends" element={
-          <AppLayout><PageWrapper><FriendModeSelect /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><FriendModeSelect /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
 
         {/* ── Multiplayer lobby ─────────────────────────────────────────── */}
         <Route path="/game/:gameType/queue" element={
-          <AppLayout><PageWrapper><RandomQueue /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><RandomQueue /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
         <Route path="/game/:gameType/invite" element={
-          <AppLayout><PageWrapper><InviteScreen /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><InviteScreen /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
         <Route path="/game/:gameType/join" element={
-          <AppLayout><PageWrapper><JoinRoomScreen /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><JoinRoomScreen /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
         <Route path="/join-room" element={
-          <AppLayout><PageWrapper><JoinRoomScreen /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><JoinRoomScreen /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
 
         {/* ── Deep-link entry point ─────────────────────────────────────── */}
         <Route path="/join/:roomCode" element={
-          <AppLayout><PageWrapper><JoinRedirect /></PageWrapper></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><JoinRedirect /></PageWrapper></AppLayout>
+          </ProtectedRoute>
         } />
 
       </Routes>
