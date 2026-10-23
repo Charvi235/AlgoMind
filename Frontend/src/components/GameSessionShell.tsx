@@ -53,7 +53,7 @@ const DEFAULT_SESSION_SECONDS = 60;
 
 // Per-game override — add a line here to give any game a different length.
 const SESSION_SECONDS_BY_GAME: Partial<Record<GameType, number>> = {
-  sorting: 120,   // sorting rounds have 4–10 steps, so give players 2 minutes
+  sorting: 420,   // sorting sessions get 5 extra minutes beyond the previous 2-minute limit
 };
 
 // ─── Session-end stats ─────────────────────────────────────────────────────────

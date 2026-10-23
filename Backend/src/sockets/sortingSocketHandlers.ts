@@ -15,7 +15,7 @@ import {
   type SortingRoom,
 } from "./sortingRoomManager";
 
-const MATCH_SECONDS = 120;
+const MATCH_SECONDS = 420;
 
 function publicRound(room: SortingRoom, socketId: string) {
   const data = room.currentRound;

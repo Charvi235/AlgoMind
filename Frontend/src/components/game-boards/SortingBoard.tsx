@@ -83,6 +83,7 @@ export default function SortingBoard({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [validating, setValidating] = useState(false);
+  const [revealedHintKey, setRevealedHintKey] = useState<string | null>(null);
   const [mistakes, setMistakes] = useState(0);
   const [errorIdx, setErrorIdx] = useState<number[]>([]);
   const [reload, setReload] = useState(0);
@@ -322,12 +323,14 @@ export default function SortingBoard({
   const pickMode = step?.kind === "pick-min";
   const [lo, hi] = step?.range ?? [0, -1];
   const progress = total > 0 ? game.stepIndex / total : 1;
+  const hintKey = `${activeRound}:${game.algo}`;
 
   return (
-    <div className="flex flex-col items-center gap-6 py-4">
-      {loadError && <p role="alert" className="text-sm text-error">{loadError}</p>}
+    <div className="flex flex-col gap-4 py-4 lg:flex-row lg:items-start">
+      <div className="flex-1 min-w-0 flex flex-col items-center gap-6">
+        {loadError && <p role="alert" className="text-sm text-error">{loadError}</p>}
 
-      <div className="w-full max-w-xl flex flex-col gap-2">
+        <div className="w-full max-w-xl flex flex-col gap-2">
         <div className="flex items-baseline justify-between gap-3 flex-wrap">
           <h2 className="font-sans text-xl font-bold text-textPrimary">{info.title}</h2>
           <span className="font-mono text-xs text-textMuted">
@@ -341,11 +344,11 @@ export default function SortingBoard({
             transition={{ duration: 0.25 }}
           />
         </div>
-        <p className="text-sm text-textMuted" aria-live="polite">{step?.prompt ?? info.rule}</p>
+        {step?.prompt && <p className="text-sm text-textMuted" aria-live="polite">{step.prompt}</p>}
         {validating && <p className="text-xs text-textMuted">Checking your answer…</p>}
-      </div>
+        </div>
 
-      <Card className="w-full max-w-xl !py-8">
+        <Card className="w-full max-w-xl !py-8">
         <div
           className="flex items-end justify-center gap-3 sm:gap-4"
           style={{ height: MAX_BAR + 8 }}
@@ -385,7 +388,7 @@ export default function SortingBoard({
             );
           })}
         </div>
-      </Card>
+        </Card>
 
       {!done && step?.kind === "swap-or-keep" && (
         <div className="flex gap-3">
@@ -417,7 +420,7 @@ export default function SortingBoard({
         <p className="text-xs uppercase tracking-widest text-textMuted">Tap the smallest bar in the unsorted section</p>
       )}
 
-      <div className="flex items-center gap-4 flex-wrap justify-center text-xs text-textMuted">
+        <div className="flex items-center gap-4 flex-wrap justify-center text-xs text-textMuted">
         {[
           { color: C.node, label: "Unsorted" },
           { color: C.gold, label: "Current step" },
@@ -430,9 +433,9 @@ export default function SortingBoard({
         <span className="font-mono">
           mistakes: <span style={{ color: mistakes ? C.error : C.textMuted }}>{mistakes}</span>
         </span>
-      </div>
+        </div>
 
-      <AnimatePresence>
+        <AnimatePresence>
         {done && (
           <motion.div
             initial={{ opacity: 0, y: 12, scale: 0.96 }}
@@ -456,7 +459,57 @@ export default function SortingBoard({
             </Card>
           </motion.div>
         )}
-      </AnimatePresence>
+        </AnimatePresence>
+      </div>
+
+      <aside className="w-full shrink-0 flex flex-col gap-4 lg:w-72">
+        <Card className="flex flex-col gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-widest text-textMuted mb-1">Algorithm</p>
+            <h3 className="font-sans text-lg font-bold text-textPrimary">{info.title}</h3>
+            <p className="mt-1 text-xs text-textMuted">Time complexity: {info.complexity}</p>
+          </div>
+
+          <div>
+            <p className="text-xs uppercase tracking-widest text-textMuted mb-2">How it works</p>
+            <p className="text-sm text-textMuted">{info.rule}</p>
+          </div>
+
+          {!done && (
+            <div>
+              {revealedHintKey === hintKey ? (
+                <>
+                  <p className="text-xs uppercase tracking-widest text-gold mb-2">Hint used</p>
+                  <p className="text-sm text-textPrimary" role="status">{info.hint}</p>
+                </>
+              ) : (
+                <Button
+                  variant="secondary"
+                  className="w-full justify-center"
+                  onClick={() => setRevealedHintKey(hintKey)}
+                >
+                  Show this round&apos;s hint
+                </Button>
+              )}
+            </div>
+          )}
+        </Card>
+
+        <Card className="!p-4 flex flex-col gap-2">
+          <p className="text-xs uppercase tracking-widest text-textMuted mb-1">Legend</p>
+          {[
+            { color: C.node, label: "Unsorted bar" },
+            { color: C.gold, label: "Current step" },
+            { color: C.teal, label: "Sorted bar" },
+            { color: C.error, label: "Incorrect choice" },
+          ].map(({ color, label }) => (
+            <div key={label} className="flex items-center gap-2">
+              <span className="inline-block w-3 h-3 rounded-full shrink-0" style={{ background: color }} aria-hidden="true" />
+              <span className="text-xs text-textMuted">{label}</span>
+            </div>
+          ))}
+        </Card>
+      </aside>
     </div>
   );
 }
