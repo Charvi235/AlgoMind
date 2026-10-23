@@ -18,6 +18,7 @@ import {
 } from "react";
 import { getToken, setToken, clearToken } from "../lib/auth";
 import { socket } from "../lib/socket";
+import { apiPost, ApiError } from "../lib/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,10 +32,12 @@ export interface AuthUser {
 }
 
 interface AuthContextValue {
-  user:    AuthUser | null;
-  loading: boolean;
-  login:   (email: string, password: string) => Promise<void>;
-  logout:  () => void;
+  user:       AuthUser | null;
+  loading:    boolean;
+  login:      (identifier: string, password: string) => Promise<void>;
+  logout:     () => void;
+  /** Called after signup/complete to store the session without a separate /me round-trip. */
+  setSession: (token: string, user: Pick<AuthUser, "id" | "username" | "email" | "totalXP">) => void;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -82,44 +85,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // ── login ─────────────────────────────────────────────────────────────────
-  const login = useCallback(async (email: string, password: string) => {
-    let res: Response;
-    try {
-      res = await fetch(`${API}/api/auth/login`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ email, password }),
-      });
-    } catch {
-      throw new Error("Can't reach the server");
-    }
-
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(
-        (body as { error?: string }).error || "Login failed"
-      );
-    }
-
-    const { token, user: userData } = await res.json() as {
+  const login = useCallback(async (identifier: string, password: string) => {
+    const data = await apiPost<{
       token: string;
-      user: Pick<AuthUser, "id" | "username" | "email" | "totalXP">;
-    };
+      user:  Pick<AuthUser, "id" | "username" | "email" | "totalXP">;
+    }>("/api/auth/login", { identifier, password }).catch((err) => {
+      if (err instanceof ApiError) throw err;
+      throw err;
+    });
 
-    setToken(token);
+    setToken(data.token);
 
     // Disconnect so the next connection picks up the new token.
     socket.disconnect();
 
     // The /me shape includes streak fields; /login only returns core fields.
-    // Populate streak fields with 0 until the next /me call (e.g. on refresh)
-    // so the type is always consistent throughout the session.
+    // Populate streak fields with 0 until the next /me call (e.g. on refresh).
     setUser({
-      ...userData,
+      ...data.user,
       current_streak: 0,
       longest_streak: 0,
     });
   }, []);
+
+  // ── setSession ────────────────────────────────────────────────────────────
+  // Used by the signup flow after /signup/complete so SignupPage can hand
+  // control to the app without a separate /me round-trip.
+  const setSession = useCallback(
+    (token: string, userData: Pick<AuthUser, "id" | "username" | "email" | "totalXP">) => {
+      setToken(token);
+      socket.disconnect();
+      setUser({
+        ...userData,
+        current_streak: 0,
+        longest_streak: 0,
+      });
+    },
+    [],
+  );
 
   // ── logout ────────────────────────────────────────────────────────────────
   const logout = useCallback(() => {
@@ -129,7 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, setSession }}>
       {children}
     </AuthContext.Provider>
   );
