@@ -16,7 +16,7 @@ import Card from "../ui/Card";
 import Button from "../ui/Button";
 import { socket } from "../../lib/socket";
 import type { SimpleNode, SimpleEdge } from "../../utils/graphGenerator";
-
+import { getToken, clearToken } from "../../lib/auth";
 
 // ─── Theme constants ───────────────────────────────────────────────
 const C = {
@@ -44,8 +44,22 @@ interface ServerGraph {
   target: string;
 }
 
+// Sends the login token with every request. A 401 means the token is
+// missing or expired, so clear it and go back to the login page.
+async function authFetch(url: string, init: { method?: string; body?: string } = {}): Promise<Response> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(url, { ...init, headers });
+  if (res.status === 401) {
+    clearToken();
+    window.location.assign("/login");
+  }
+  return res;
+}
+
 async function fetchNewGraph(round: number): Promise<ServerGraph> {
-  const res = await fetch(`${API_BASE}/api/games/dijkstra/new?round=${round}`);
+  const res = await authFetch(`${API_BASE}/api/games/dijkstra/new?round=${round}`);
   if (!res.ok) throw new Error("Failed to fetch graph");
   return res.json();
 }
@@ -55,9 +69,8 @@ async function validateStep(
   currentNode: string,
   chosenNode: string
 ): Promise<{ correct: boolean; isComplete: boolean }> {
-  const res = await fetch(`${API_BASE}/api/games/dijkstra/validate-step`, {
+  const res = await authFetch(`${API_BASE}/api/games/dijkstra/validate-step`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ graphId, currentNode, chosenNode }),
   });
   if (!res.ok) throw new Error("Failed to validate step");
