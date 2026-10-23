@@ -30,6 +30,9 @@ const stagger = {
   visible: { transition: { staggerChildren: 0.08, delayChildren: 0.04 } },
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// ─── Clipboard / Share helpers ────────────────────────────────────────────────
 type CopyTarget = "code" | "link";
 
 export default function InviteScreen() {
@@ -39,13 +42,16 @@ export default function InviteScreen() {
   const [code, setCode]                 = useState<string | null>(null);
   const [copiedTarget, setCopiedTarget] = useState<CopyTarget | null>(null);
   const [connError, setConnError]       = useState(false);
+  const [roomError, setRoomError]       = useState<string | null>(null);
   const matchedRef = useRef(false);
 
   // Derived values are computed BEFORE the hooks that use them, and the
   // early return for an invalid gameType comes AFTER all hooks.
   const entry     = isGameType(gameType) ? gameRegistry[gameType] : null;
   const GameIcon  = entry ? gameIconMap[entry.iconName] : undefined;
-  const shareLink = code ? `${window.location.origin}/join/${code}` : "";
+  const shareLink = code
+    ? `${window.location.origin}/join/${code}?gameType=${gameType}`
+    : "";
 
   // ── Socket.io: create room (on every connect), wait for opponent ───────
   useEffect(() => {
@@ -54,21 +60,26 @@ export default function InviteScreen() {
 
     const createRoom = () => {
       setConnError(false);
+      setRoomError(null);
       socket.emit("create_room", { gameType });
     };
-    const onRoomCreated = ({ code }: { roomId: string; code: string }) => {
-      setCode(code);
+    const onRoomCreated = ({ code: newCode }: { roomId: string; code: string }) => {
+      setCode(newCode);
     };
     const onMatched = ({ roomId }: { roomId: string }) => {
       matchedRef.current = true;
       navigate(`/game/${gameType}/match/${roomId}`);
     };
+    const onRoomError = ({ message }: { message: string }) => setRoomError(message);
     const onConnectError = () => setConnError(true);
 
     socket.on("connect", createRoom);
     socket.on("connect_error", onConnectError);
     socket.on("room_created", onRoomCreated);
     socket.on("matched", onMatched);
+    socket.on("opponent_joined", onMatched);
+    socket.on("sorting_room_error", onRoomError);
+    socket.on("live_unavailable", onRoomError);
 
     if (socket.connected) createRoom();
     else socket.connect();
@@ -80,6 +91,9 @@ export default function InviteScreen() {
       socket.off("connect_error", onConnectError);
       socket.off("room_created", onRoomCreated);
       socket.off("matched", onMatched);
+      socket.off("opponent_joined", onMatched);
+      socket.off("sorting_room_error", onRoomError);
+      socket.off("live_unavailable", onRoomError);
     };
   }, [gameType, navigate]);
 
@@ -97,7 +111,7 @@ export default function InviteScreen() {
 
   const handleShare = useCallback(async () => {
     if (!code) return;
-    if (typeof navigator !== "undefined" && "share" in navigator) {
+    if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
       try {
         await navigator.share({
           title: `Join me in ${entry?.title ?? "AlgoMind"} on AlgoMind!`,
@@ -116,7 +130,7 @@ export default function InviteScreen() {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
         <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
-        <button onClick={() => navigate("/")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
+        <button onClick={() => navigate("/dashboard")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
           Back to Dashboard
         </button>
       </div>
@@ -158,6 +172,7 @@ export default function InviteScreen() {
             <h1 className="font-sans text-xl font-bold text-textPrimary">Invite a Friend</h1>
             <p className="text-sm text-textMuted">Share this code or link to start a match</p>
           </div>
+          {roomError && <p role="alert" className="text-sm text-error">{roomError}</p>}
 
           <div className="flex flex-col items-center gap-3 w-full">
             <p className="text-xs uppercase tracking-widest text-textMuted">Room code</p>
@@ -208,7 +223,7 @@ export default function InviteScreen() {
               onClick={handleShare}
               disabled={!code}
               className="w-full flex items-center justify-center gap-2 rounded-lg border border-panelBorder bg-background px-4 py-3 text-sm font-medium text-textPrimary hover:border-gold/50 hover:bg-gold/5 transition-colors duration-200 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold"
-              aria-label={typeof navigator !== "undefined" && "share" in navigator ? "Share invite link" : "Copy invite link to clipboard"}
+              aria-label={typeof navigator !== "undefined" && typeof navigator.share === "function" ? "Share invite link" : "Copy invite link to clipboard"}
             >
               {copiedTarget === "link" ? (
                 <>
@@ -219,7 +234,7 @@ export default function InviteScreen() {
                 <>
                   <Share2 size={15} className="text-gold" aria-hidden="true" />
                   <span className="text-gold">
-                    {typeof navigator !== "undefined" && "share" in navigator ? "Share Link" : "Copy Link"}
+                    {typeof navigator !== "undefined" && typeof navigator.share === "function" ? "Share Link" : "Copy Link"}
                   </span>
                 </>
               )}

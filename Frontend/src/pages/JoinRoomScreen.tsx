@@ -5,19 +5,7 @@
  * Also reachable via JoinRedirect (/join/:roomCode) which passes a
  * pre-filled code through location.state or the `initialCode` prop.
  *
- * ─── MOCK / TODO ─────────────────────────────────────────────────────────────
- * handleJoin currently accepts any valid 6-character string and navigates
- * directly to a stub match route.
- *
- * Replace the mock submission with:
- *   const { room, error } = await api.post("/api/rooms/join", { code })
- *   if (error) setCodeError("Room not found or has expired.")
- *   else       navigate(`/game/${room.gameType}/match/${room.roomId}`)
- *
- * The room's gameType may differ from the URL param when reaching this page
- * from /join/:roomCode (no gameType in URL). Handle that case by reading the
- * gameType from the API response instead of the URL param.
- * ─────────────────────────────────────────────────────────────────────────────
+ * Joins a server-created invite room using its six-character code.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -54,6 +42,7 @@ export interface JoinRoomScreenProps {
 interface LocationState {
   initialCode?: string;
   autoSubmit?:  boolean;
+  gameType?: string;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -66,11 +55,17 @@ export default function JoinRoomScreen({ initialCode: propCode }: JoinRoomScreen
   const locState    = (location.state ?? {}) as LocationState;
   const seedCode    = propCode ?? locState.initialCode ?? "";
   const autoSubmit  = locState.autoSubmit === true;
+  const requestedGameType = isGameType(gameType)
+    ? gameType
+    : isGameType(locState.gameType)
+      ? locState.gameType
+      : undefined;
 
   const [code,      setCode]      = useState(seedCode.toUpperCase().slice(0, 6));
   const [codeError, setCodeError] = useState<string | null>(null);
-  const [joining,   setJoining]   = useState(false);
+  const [joining,   setJoining]   = useState(autoSubmit);
   const inputRef                  = useRef<HTMLInputElement>(null);
+  const cleanupJoinRef            = useRef<() => void>(() => {});
 
   // Determine back destination — if gameType is present use game friends page, else home
   const backTo = isGameType(gameType) ? `/game/${gameType}/friends` : "/";
@@ -85,33 +80,70 @@ export default function JoinRoomScreen({ initialCode: propCode }: JoinRoomScreen
 
     setCodeError(null);
     setJoining(true);
+    cleanupJoinRef.current();
 
-    socket.connect();
-    socket.emit("join_room", { code: trimmed });
-
-    socket.once("matched", ({ roomId }: { roomId: string }) => {
-      const resolvedGameType = isGameType(gameType) ? gameType : "dijkstra";
+    const onJoined = (data: { roomId: string; gameType?: string }) => {
+      cleanupJoinRef.current();
       setJoining(false);
-      navigate(`/game/${resolvedGameType}/match/${roomId}`);
-    });
-
-    socket.once("join_room_error", ({ message }: { message: string }) => {
+      const resolvedGameType = data.gameType ?? requestedGameType ?? "dijkstra";
+      navigate(`/game/${resolvedGameType}/match/${data.roomId}`);
+    };
+    const onRoomError = ({ message }: { message: string }) => {
+      cleanupJoinRef.current();
       setJoining(false);
       setCodeError(message);
-    });
-  }, [gameType, navigate]);
-  
+    };
+    cleanupJoinRef.current = () => {
+      socket.off("matched", onJoined);
+      socket.off("room_joined", onJoined);
+      socket.off("join_room_error", onRoomError);
+      socket.off("sorting_room_error", onRoomError);
+      socket.off("live_unavailable", onRoomError);
+    };
+    socket.on("matched", onJoined);
+    socket.on("room_joined", onJoined);
+    socket.on("join_room_error", onRoomError);
+    socket.on("sorting_room_error", onRoomError);
+    socket.on("live_unavailable", onRoomError);
+    if (!socket.connected) socket.connect();
+    socket.emit("join_room", { code: trimmed, gameType: requestedGameType });
+  }, [navigate, requestedGameType]);
   // Focus input on mount
   useEffect(() => {
     if (!autoSubmit) inputRef.current?.focus();
-  }, []);
+  }, [autoSubmit]);
+
+  useEffect(() => () => cleanupJoinRef.current(), []);
 
   // Auto-submit when a pre-filled code is passed (deep-link flow)
   useEffect(() => {
-    if (autoSubmit && seedCode.length === 6) {
-      handleJoin(seedCode);
-    }
-  }, [autoSubmit]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!autoSubmit || seedCode.length !== 6) return;
+    const onJoined = (data: { roomId: string; gameType?: string }) => {
+      setJoining(false);
+      const resolvedGameType = data.gameType ?? requestedGameType ?? "dijkstra";
+      navigate(`/game/${resolvedGameType}/match/${data.roomId}`);
+    };
+    const onRoomError = ({ message }: { message: string }) => {
+      setJoining(false);
+      setCodeError(message);
+    };
+
+    socket.on("matched", onJoined);
+    socket.on("room_joined", onJoined);
+    socket.on("join_room_error", onRoomError);
+    socket.on("sorting_room_error", onRoomError);
+    socket.on("live_unavailable", onRoomError);
+    if (!socket.connected) socket.connect();
+    socket.emit("join_room", { code: seedCode.toUpperCase(), gameType: requestedGameType });
+
+    return () => {
+      socket.off("matched", onJoined);
+      socket.off("room_joined", onJoined);
+      socket.off("join_room_error", onRoomError);
+      socket.off("sorting_room_error", onRoomError);
+      socket.off("live_unavailable", onRoomError);
+    };
+  }, [autoSubmit, navigate, requestedGameType, seedCode]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);

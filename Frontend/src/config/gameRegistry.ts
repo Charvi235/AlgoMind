@@ -51,7 +51,7 @@ export const gameRegistry: Record<GameType, GameRegistryEntry> = {
   },
   sorting: {
     title:       "Sorting Showdown",
-    description: "Sort the bars by hand — bubble, insertion & selection",
+    description: "Sort the bars by hand — bubble, insertion, selection, merge, quick & heap",
     iconName:    "ArrowUpDown",
     routeKey:    "sorting",
   },

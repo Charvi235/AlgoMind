@@ -507,7 +507,7 @@ export default function MathsQuestionsGame() {
                 <Button variant="primary" onClick={handleReset}>
                   Play again
                 </Button>
-                <Button variant="secondary" onClick={() => navigate("/")}>
+                <Button variant="secondary" onClick={() => navigate("/dashboard")}>
                   Back to dashboard
                 </Button>
               </div>

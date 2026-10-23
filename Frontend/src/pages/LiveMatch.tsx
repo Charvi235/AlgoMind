@@ -3,11 +3,8 @@
  *
  * Route: /game/:gameType/match/:roomId
  *
- * Thin wrapper around GameSessionShell for live (multiplayer) mode.
- * The SERVER decides when the match ends: results are built from the
- * `match_end` socket event (real stats + winner for both players).
- * The shell's local timer only shows "Time's up!" and starts a short
- * wait for that event, with a fallback if it never arrives.
+ * Dijkstra and Sorting use different server event payloads, while sharing
+ * the same room page and result view.
  */
 
 import { useEffect, useState } from "react";
@@ -15,80 +12,164 @@ import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ArrowLeft, WifiOff } from "lucide-react";
 import GameSessionShell from "../components/GameSessionShell";
+import Button from "../components/ui/Button";
 import { socket } from "../lib/socket";
 import type { LiveSessionStats, PlayerResult } from "../types/session";
 import { isGameType } from "../config/gameRegistry";
 
-interface MatchEndResult {
-  socketId:        string;
-  username:        string | null;
+interface DijkstraMatchEndResult {
+  socketId: string;
+  username: string | null;
   roundsCompleted: number;
-  accuracy:        number;
-  xp:              number;
+  accuracy: number;
+  xp: number;
 }
 
-interface MatchEndPayload {
-  results:        MatchEndResult[];
-  winnerSocketId: string | null; // null = tie
+interface DijkstraMatchEndPayload {
+  results: DijkstraMatchEndResult[];
+  winnerSocketId: string | null;
 }
 
-// How long to wait for match_end after our local timer hits zero.
+interface SortingMatchPlayer {
+  socketId: string;
+  roundsCompleted: number;
+  correctCount: number;
+  accuracy: number;
+  score: number;
+}
+
+interface SortingMatchEndPayload {
+  roomId: string;
+  players: SortingMatchPlayer[];
+  winnerSocketId: string | null;
+}
+
 const RESULTS_WAIT_MS = 10000;
 
-function toPlayerResult(r: MatchEndResult, label: string): PlayerResult {
+function toDijkstraPlayerResult(result: DijkstraMatchEndResult, label: string): PlayerResult {
   return {
     label,
-    roundsCompleted: r.roundsCompleted,
-    correctCount:    r.roundsCompleted,
-    accuracy:        r.accuracy,
-    xp:              r.xp,
+    roundsCompleted: result.roundsCompleted,
+    correctCount: result.roundsCompleted,
+    accuracy: result.accuracy,
+    xp: result.xp,
   };
 }
 
 export default function LiveMatch() {
   const { gameType, roomId } = useParams<{ gameType: string; roomId: string }>();
-  const navigate             = useNavigate();
+  const navigate = useNavigate();
+  const isSortingMatch = gameType === "sorting" && Boolean(roomId);
+  const opponentLabel = "Opponent";
 
-  const [opponentLeft,      setOpponentLeft]      = useState(false);
+  const [ready, setReady] = useState(false);
+  const [matchError, setMatchError] = useState<string | null>(null);
+  const [opponentLeft, setOpponentLeft] = useState(false);
   const [waitingForResults, setWaitingForResults] = useState(false);
-  const [resultsTimedOut,   setResultsTimedOut]   = useState(false);
+  const [resultsTimedOut, setResultsTimedOut] = useState(false);
 
-  // ── Server-driven match end + opponent-left notice ─────────────────────
   useEffect(() => {
-    if (!gameType) return;
+    if (!isSortingMatch || !roomId) return;
 
-    const onMatchEnd = ({ results, winnerSocketId }: MatchEndPayload) => {
-      const me  = results.find((r) => r.socketId === socket.id);
-      const opp = results.find((r) => r.socketId !== socket.id);
-      if (!me || !opp) return;
+    const joinMatch = () => socket.emit("join_match", { roomId });
+    const onJoined = ({ status }: { roomId: string; status: "waiting" | "active" }) => {
+      if (status !== "active") {
+        setMatchError("Waiting for the other player to join.");
+        return;
+      }
+      setMatchError(null);
+      setReady(true);
+    };
+    const onRoomError = ({ message }: { message: string }) => {
+      setReady(false);
+      setMatchError(message);
+    };
+    const onOpponentLeft = () => {
+      setReady(false);
+      setOpponentLeft(true);
+      setMatchError("Your friend left the match.");
+    };
+    const onMatchEnd = ({ players, winnerSocketId }: SortingMatchEndPayload) => {
+      const player = players.find((item) => item.socketId === socket.id);
+      const opponent = players.find((item) => item.socketId !== socket.id);
+      if (!player || !opponent) {
+        setMatchError("The match ended, but its result could not be loaded.");
+        setReady(false);
+        return;
+      }
 
-      const winner: LiveSessionStats["winner"] =
-        winnerSocketId === null        ? "tie" :
-        winnerSocketId === socket.id   ? "player" :
-                                         "opponent";
-
+      const toResult = (item: SortingMatchPlayer, label: string): PlayerResult => ({
+        label,
+        roundsCompleted: item.roundsCompleted,
+        correctCount: item.correctCount,
+        accuracy: item.accuracy,
+        xp: item.score,
+      });
       const stats: LiveSessionStats = {
-        mode:     "live",
+        mode: "live",
+        gameType: "sorting",
+        roomId,
+        player: toResult(player, "You"),
+        opponent: toResult(opponent, opponentLabel),
+        winner: winnerSocketId === null
+          ? "tie"
+          : winnerSocketId === socket.id
+            ? "player"
+            : "opponent",
+      };
+      navigate("/game/sorting/results", { state: stats });
+    };
+
+    socket.on("sorting_room_joined", onJoined);
+    socket.on("sorting_room_error", onRoomError);
+    socket.on("opponent_left", onOpponentLeft);
+    socket.on("sorting_match_end", onMatchEnd);
+    socket.on("connect", joinMatch);
+    if (socket.connected) joinMatch();
+    else socket.connect();
+
+    return () => {
+      socket.off("sorting_room_joined", onJoined);
+      socket.off("sorting_room_error", onRoomError);
+      socket.off("opponent_left", onOpponentLeft);
+      socket.off("sorting_match_end", onMatchEnd);
+      socket.off("connect", joinMatch);
+    };
+  }, [isSortingMatch, navigate, opponentLabel, roomId]);
+
+  useEffect(() => {
+    if (!gameType || isSortingMatch) return;
+
+    const onMatchEnd = ({ results, winnerSocketId }: DijkstraMatchEndPayload) => {
+      const player = results.find((item) => item.socketId === socket.id);
+      const opponent = results.find((item) => item.socketId !== socket.id);
+      if (!player || !opponent) return;
+
+      const winner: LiveSessionStats["winner"] = winnerSocketId === null
+        ? "tie"
+        : winnerSocketId === socket.id
+          ? "player"
+          : "opponent";
+      const stats: LiveSessionStats = {
+        mode: "live",
         gameType,
-        roomId:   roomId ?? "unknown",
-        player:   toPlayerResult(me, "You"),
-        opponent: toPlayerResult(opp, opp.username ?? "Opponent"),
+        roomId: roomId ?? "unknown",
+        player: toDijkstraPlayerResult(player, "You"),
+        opponent: toDijkstraPlayerResult(opponent, opponent.username ?? "Opponent"),
         winner,
       };
       navigate(`/game/${gameType}/results`, { state: stats });
     };
 
     const onOpponentLeft = () => setOpponentLeft(true);
-
     socket.on("match_end", onMatchEnd);
     socket.on("opponent_left", onOpponentLeft);
     return () => {
       socket.off("match_end", onMatchEnd);
       socket.off("opponent_left", onOpponentLeft);
     };
-  }, [gameType, roomId, navigate]);
+  }, [gameType, isSortingMatch, navigate, roomId]);
 
-  // ── Fallback if match_end never arrives after our timer ended ──────────
   useEffect(() => {
     if (!waitingForResults) return;
     const id = setTimeout(() => setResultsTimedOut(true), RESULTS_WAIT_MS);
@@ -100,7 +181,7 @@ export default function LiveMatch() {
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
         <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
         <button
-          onClick={() => navigate("/")}
+          onClick={() => navigate("/dashboard")}
           className="text-sm text-textMuted underline hover:text-textPrimary transition-colors"
         >
           Back to Dashboard
@@ -109,12 +190,9 @@ export default function LiveMatch() {
     );
   }
 
-  const resolvedRoomId = roomId ?? "unknown";
-
-  // Disconnecting the socket lets the server notify the opponent
-  // (opponent_left) instead of leaving them playing against a ghost.
   const handleLeave = () => {
-    socket.disconnect();
+    if (isSortingMatch) socket.emit("leave_match");
+    else socket.disconnect();
     navigate(`/game/${gameType}/friends`);
   };
 
@@ -122,8 +200,8 @@ export default function LiveMatch() {
     <motion.div
       className="flex flex-col gap-4"
       initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0  }}
-      exit={{    opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.25, ease: "easeInOut" }}
     >
       <motion.button
@@ -141,7 +219,7 @@ export default function LiveMatch() {
       <div className="flex items-center gap-2">
         <span className="text-xs text-textMuted">Room:</span>
         <span className="font-mono text-xs text-node border border-panelBorder bg-panel rounded px-2 py-0.5">
-          {resolvedRoomId}
+          {roomId}
         </span>
       </div>
 
@@ -151,8 +229,8 @@ export default function LiveMatch() {
           className="flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium"
           style={{
             borderColor: "rgba(255,107,138,0.35)",
-            background:  "rgba(255,107,138,0.07)",
-            color:       "#FF6B8A",
+            background: "rgba(255,107,138,0.07)",
+            color: "#FF6B8A",
           }}
         >
           <WifiOff size={14} aria-hidden="true" />
@@ -160,11 +238,26 @@ export default function LiveMatch() {
         </div>
       )}
 
-      <GameSessionShell
-        gameType={gameType}
-        mode="live"
-        onSessionEnd={() => setWaitingForResults(true)}
-      />
+      {isSortingMatch && !ready && (
+        <div className="flex flex-col items-center gap-3 py-10">
+          <p role="status" className="text-sm text-textMuted">
+            {matchError ?? "Connecting to the sorting match…"}
+          </p>
+          {matchError && <Button variant="secondary" onClick={handleLeave}>Back to Play with Friends</Button>}
+        </div>
+      )}
+
+      {(!isSortingMatch || ready) && (
+        <GameSessionShell
+          gameType={gameType}
+          mode="live"
+          roomId={roomId}
+          opponentLabel={opponentLabel}
+          onSessionEnd={() => {
+            if (!isSortingMatch) setWaitingForResults(true);
+          }}
+        />
+      )}
 
       {waitingForResults && !resultsTimedOut && (
         <p className="text-center text-sm text-textMuted">Waiting for final results…</p>
@@ -176,7 +269,7 @@ export default function LiveMatch() {
             We couldn't fetch the final results. The match may have ended early.
           </p>
           <button
-            onClick={() => navigate("/")}
+            onClick={() => navigate("/dashboard")}
             className="text-sm text-textMuted underline hover:text-textPrimary transition-colors"
           >
             Back to Dashboard

@@ -8,7 +8,7 @@
  * restarts or the connection drops, the player is re-queued automatically.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ArrowLeft, WifiOff } from "lucide-react";
@@ -36,23 +36,39 @@ export default function RandomQueue() {
   const { gameType } = useParams<{ gameType: string }>();
   const navigate     = useNavigate();
   const [connError, setConnError] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
 
-  // All hooks run BEFORE any early return (Rules of Hooks).
+  const entry = isGameType(gameType) ? gameRegistry[gameType] : null;
+  const GameIcon = entry ? gameIconMap[entry.iconName] : undefined;
+
+  const leaveQueue = useCallback(() => {
+    if (gameType === "sorting") socket.emit("leave_queue");
+    else socket.emit("cancel_queue", { gameType });
+  }, [gameType]);
+  const handleCancel = useCallback(() => {
+    leaveQueue();
+    navigate(`/game/${gameType}/friends`);
+  }, [gameType, leaveQueue, navigate]);
+
   useEffect(() => {
     if (!isGameType(gameType)) return;
 
     const joinQueue = () => {
       setConnError(false);
+      setQueueError(null);
       socket.emit("join_queue", { gameType });
     };
-    const onMatched = ({ roomId }: { roomId: string }) => {
-      navigate(`/game/${gameType}/match/${roomId}`);
+    const onMatched = ({ roomId, gameType: matchedGameType }: { roomId: string; gameType?: string }) => {
+      navigate(`/game/${matchedGameType ?? gameType}/match/${roomId}`);
     };
     const onConnectError = () => setConnError(true);
+    const onQueueError = ({ message }: { message: string }) => setQueueError(message);
 
     socket.on("connect", joinQueue);
     socket.on("connect_error", onConnectError);
     socket.on("matched", onMatched);
+    socket.on("sorting_room_error", onQueueError);
+    socket.on("live_unavailable", onQueueError);
 
     if (socket.connected) joinQueue();
     else socket.connect();
@@ -60,30 +76,25 @@ export default function RandomQueue() {
     // The socket is intentionally NOT disconnected here: LiveMatch
     // reuses the same connection after matching.
     return () => {
-      socket.emit("cancel_queue", { gameType });
+      leaveQueue();
       socket.off("connect", joinQueue);
       socket.off("connect_error", onConnectError);
       socket.off("matched", onMatched);
+      socket.off("sorting_room_error", onQueueError);
+      socket.off("live_unavailable", onQueueError);
     };
-  }, [gameType, navigate]);
+  }, [gameType, leaveQueue, navigate]);
 
-  if (!isGameType(gameType)) {
+  if (!entry) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
         <p className="text-lg font-semibold text-textPrimary">Unknown game type.</p>
-        <button onClick={() => navigate("/")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
+        <button onClick={() => navigate("/dashboard")} className="text-sm text-textMuted underline hover:text-textPrimary transition-colors">
           Back to Dashboard
         </button>
       </div>
     );
   }
-
-  const entry    = gameRegistry[gameType];
-  const GameIcon = gameIconMap[entry.iconName];
-
-  const handleCancel = () => {
-    navigate(`/game/${gameType}/friends`); // effect cleanup emits cancel_queue
-  };
 
   return (
     <motion.div
@@ -133,7 +144,7 @@ export default function RandomQueue() {
 
           <div className="flex flex-col gap-1.5">
             <p className="font-sans text-base font-semibold text-textPrimary">
-              Searching for an opponent…
+              {queueError ? "Could not join matchmaking" : connError ? "Connection issue" : "Searching for an opponent…"}
             </p>
             {connError ? (
               <div
@@ -145,8 +156,8 @@ export default function RandomQueue() {
                 Can't reach the server. Retrying…
               </div>
             ) : (
-              <p className="font-sans text-sm text-textMuted">
-                This usually takes a few seconds
+              <p role={queueError ? "alert" : undefined} className="font-sans text-sm text-textMuted">
+                {queueError ?? "This usually takes a few seconds"}
               </p>
             )}
           </div>
