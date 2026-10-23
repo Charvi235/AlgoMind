@@ -1,171 +1,350 @@
-/**
- * SortingBoard.tsx
- *
- * Core gameplay UI for "Sorting Showdown".
- * The player performs Bubble / Insertion / Selection sort by hand.
- * All algorithm logic lives in utils/sortingEngine.ts — this file is UI only.
- *
- * Inside GameSessionShell:
- *   • `round` picks the algorithm (bubble → insertion → selection → …)
- *   • `onRoundComplete` fires once the array is fully sorted.
- *       correctActions = number of steps in the round
- *       totalActions   = steps + wrong answers   (so accuracy reflects mistakes)
- *
- * Standalone (no onRoundComplete): shows its own "Sorted!" card with a
- * "Next array" button.
- */
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, ArrowLeftRight, Equal } from "lucide-react";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
+import { socket } from "../../lib/socket";
 import type { RoundCompletePayload } from "../../types/session";
 import {
   ALGO_INFO,
-  algoForRound,
-  buildSortRound,
-  randomAlgo,
-  type SortRound,
+  type ActiveSortRound,
+  type SortAlgo,
 } from "../../utils/SortingEngine";
 
-// ─── Theme ─────────────────────────────────────────────────────────────────────
 const C = {
-  panel:       "#0D1130",
   panelBorder: "#2A3166",
-  node:        "#7FA8FF",
-  gold:        "#FFD36E",
-  teal:        "#6EE7C4",
+  node: "#7FA8FF",
+  gold: "#FFD36E",
+  teal: "#6EE7C4",
   textPrimary: "#E8ECFB",
-  textMuted:   "#9199B5",
-  error:       "#FF6B8A",
+  textMuted: "#9199B5",
+  error: "#FF6B8A",
 } as const;
 
-// ─── Props ─────────────────────────────────────────────────────────────────────
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const MIN_BAR = 56;
+const MAX_BAR = 170;
+
 export interface SortingBoardProps {
-  /** Passed by GameSessionShell — decides which algorithm this round uses */
-  round?:           number;
+  round?: number;
+  mode?: "solo" | "live";
+  roomId?: string;
+  onRoundChange?: (round: number) => void;
   onRoundComplete?: (payload: RoundCompletePayload) => void;
-  onReset?:         () => void;
+  onReset?: () => void;
 }
 
-const MIN_BAR = 56;   // px
-const MAX_BAR = 170;  // px
+async function fetchRound(round: number): Promise<ActiveSortRound> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/games/sorting/new?round=${round}`);
+  } catch {
+    throw new Error(`Cannot reach the backend at ${API_BASE}. Start the backend and verify its MongoDB connection.`);
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error ?? `Could not create a sorting round (HTTP ${response.status}).`);
+  }
+  return response.json();
+}
 
-// ─── Component ─────────────────────────────────────────────────────────────────
-export default function SortingBoard({ round, onRoundComplete, onReset }: SortingBoardProps) {
-  const [game, setGame] = useState<SortRound>(() =>
-    buildSortRound(round !== undefined ? algoForRound(round) : randomAlgo())
-  );
-  const [stepIdx,  setStepIdx]  = useState(0);
+async function submitAnswer(
+  roundId: string,
+  answer: boolean | number | string
+): Promise<ActiveSortRound & { correct: boolean }> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/games/sorting/validate-step`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roundId, answer }),
+    });
+  } catch {
+    throw new Error(`Cannot reach the backend at ${API_BASE}. Start the backend and verify its MongoDB connection.`);
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error ?? `Could not validate that sorting step (HTTP ${response.status}).`);
+  }
+  return response.json();
+}
+
+export default function SortingBoard({
+  round,
+  mode = "solo",
+  roomId,
+  onRoundChange,
+  onRoundComplete,
+  onReset,
+}: SortingBoardProps) {
+  const [standaloneRound, setStandaloneRound] = useState(1);
+  const activeRound = round ?? standaloneRound;
+  const [game, setGame] = useState<ActiveSortRound | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [validating, setValidating] = useState(false);
   const [mistakes, setMistakes] = useState(0);
-  /** Which bar index (or "pair") is flashing red after a wrong answer */
   const [errorIdx, setErrorIdx] = useState<number[]>([]);
+  const [reload, setReload] = useState(0);
   const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reported   = useRef(false);
+  const reported = useRef(false);
 
-  const info  = ALGO_INFO[game.algo];
-  const total = game.steps.length;
-  const done  = stepIdx >= total;
-  const step  = done ? null : game.steps[stepIdx];
-
-  const arr    = done ? game.finalArr : step!.arr;
-  const sorted = done ? new Set(arr.map((_, i) => i)) : new Set(step!.sorted);
-  const focus  = new Set(step?.focus ?? []);
-  const maxVal = Math.max(...arr.map((x) => x.value));
-
-  // ── Report completion exactly once ───────────────────────────────────────────
   useEffect(() => {
-    if (!done || reported.current) return;
+    if (mode === "live") return;
+    let cancelled = false;
+
+    fetchRound(activeRound)
+      .then((result) => {
+        if (!cancelled) setGame(result);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setLoadError(error instanceof Error ? error.message : "Could not load the sorting round.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRound, reload, mode]);
+
+  useEffect(() => {
+    if (mode !== "live" || !roomId) return;
+
+    const requestState = () => socket.emit("request_sorting_state");
+    const handleRound = (data: { round: number }) => {
+      onRoundChange?.(data.round);
+      requestState();
+    };
+    const handleState = (data: {
+      roomId: string;
+      round: number;
+      algo: SortAlgo;
+      totalSteps: number;
+      stepIndex: number;
+      step: ActiveSortRound["step"];
+      completed: boolean;
+      finalArr?: ActiveSortRound["finalArr"];
+    }) => {
+      if (data.roomId !== roomId) return;
+      reported.current = false;
+      setLoadError(null);
+      setGame({
+        roundId: roomId,
+        algo: data.algo,
+        stepIndex: data.stepIndex,
+        totalSteps: data.totalSteps,
+        step: data.step,
+        completed: data.completed,
+        finalArr: data.finalArr,
+      });
+      setLoading(false);
+      setValidating(false);
+      setErrorIdx([]);
+      setMistakes(0);
+      onRoundChange?.(data.round);
+    };
+    const handleSocketError = ({ message }: { message: string }) => {
+      setLoadError(message);
+      setLoading(false);
+      setValidating(false);
+    };
+
+    socket.on("sorting_match_start", handleRound);
+    socket.on("sorting_round_data", handleRound);
+    socket.on("sorting_round_state", handleState);
+    socket.on("sorting_room_error", handleSocketError);
+    socket.emit("request_sorting_state");
+
+    return () => {
+      socket.off("sorting_match_start", handleRound);
+      socket.off("sorting_round_data", handleRound);
+      socket.off("sorting_round_state", handleState);
+      socket.off("sorting_room_error", handleSocketError);
+    };
+  }, [mode, roomId, onRoundChange]);
+
+  const step = game?.step ?? null;
+  const done = game?.completed ?? false;
+  const total = game?.totalSteps ?? 0;
+  const arr = done ? game?.finalArr ?? [] : step?.arr ?? [];
+  const info = game ? ALGO_INFO[game.algo as SortAlgo] : null;
+  const focus = new Set(step?.focus ?? []);
+  const sorted = new Set(done ? arr.map((_, index) => index) : step?.sorted ?? []);
+  const maxVal = Math.max(1, ...arr.map((item) => item.value));
+
+  useEffect(() => {
+    if (!done || !game || reported.current) return;
     reported.current = true;
-    // TODO: POST { algo, steps: total, mistakes } to /api/games/sorting/submit
-    onRoundComplete?.({ correctActions: total, totalActions: total + mistakes });
-  }, [done]); // eslint-disable-line react-hooks/exhaustive-deps
+    onRoundComplete?.({
+      correctActions: total,
+      totalActions: total + mistakes,
+    });
+  }, [done, game, mistakes, onRoundComplete, total]);
 
-  useEffect(() => () => { if (errorTimer.current) clearTimeout(errorTimer.current); }, []);
+  useEffect(() => () => {
+    if (errorTimer.current) clearTimeout(errorTimer.current);
+  }, []);
 
-  // ── Answer handling ──────────────────────────────────────────────────────────
   const flashError = useCallback((indices: number[]) => {
-    setMistakes((m) => m + 1);
+    setMistakes((count) => count + 1);
     setErrorIdx(indices);
     if (errorTimer.current) clearTimeout(errorTimer.current);
     errorTimer.current = setTimeout(() => setErrorIdx([]), 450);
   }, []);
 
-  const handleSwapKeep = useCallback(
-    (wantsSwap: boolean) => {
-      if (!step || step.kind !== "swap-or-keep") return;
-      // TODO: validate server-side via /api/games/sorting/validate-step
-      if (wantsSwap === step.answer) setStepIdx((i) => i + 1);
-      else flashError(step.focus);
-    },
-    [step, flashError]
-  );
+  const handleAnswer = useCallback(async (answer: boolean | number | string) => {
+    if (!game || !step || validating || done) return;
+    setValidating(true);
+    if (mode === "live") {
+      const onResult = (result: {
+        correct: boolean;
+        roomId: string;
+        round: number;
+        algo: SortAlgo;
+        totalSteps: number;
+        stepIndex: number;
+        step: ActiveSortRound["step"];
+        completed: boolean;
+        finalArr?: ActiveSortRound["finalArr"];
+      }) => {
+        socket.off("sorting_step_result", onResult);
+        clearTimeout(timeout);
+        setValidating(false);
+        if (result.roomId !== roomId) return;
+        setLoadError(null);
+        setGame({
+          roundId: roomId ?? "",
+          algo: result.algo,
+          stepIndex: result.stepIndex,
+          totalSteps: result.totalSteps,
+          step: result.step,
+          completed: result.completed,
+          finalArr: result.finalArr,
+        });
+        if (!result.correct) flashError(step.focus);
+        else setErrorIdx([]);
+      };
+      const timeout = setTimeout(() => {
+        socket.off("sorting_step_result", onResult);
+        setValidating(false);
+        setLoadError("The server did not respond. Please try that step again.");
+      }, 5000);
+      socket.on("sorting_step_result", onResult);
+      socket.emit("submit_sorting_step", { answer });
+      return;
+    }
+    try {
+      const result = await submitAnswer(game.roundId, answer);
+      setLoadError(null);
+      setGame({
+        roundId: game.roundId,
+        algo: game.algo,
+        stepIndex: result.stepIndex,
+        totalSteps: result.totalSteps,
+        step: result.step,
+        completed: result.completed,
+        finalArr: result.finalArr,
+      });
+      if (!result.correct) flashError(step.focus);
+      else setErrorIdx([]);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not validate that sorting step.");
+    } finally {
+      setValidating(false);
+    }
+  }, [game, step, validating, done, flashError, mode, roomId]);
 
-  const handlePick = useCallback(
-    (idx: number) => {
-      if (!step || step.kind !== "pick-min") return;
-      const [lo, hi] = step.range!;
-      if (idx < lo || idx > hi) return;
-      if (idx === step.answer) setStepIdx((i) => i + 1);
-      else flashError([idx]);
-    },
-    [step, flashError]
-  );
-
-  // Keyboard: S = swap, K = keep (compare-style algorithms)
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "s" || e.key === "S") handleSwapKeep(true);
-      if (e.key === "k" || e.key === "K") handleSwapKeep(false);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "s" || event.key === "S") void handleAnswer(true);
+      if (event.key === "k" || event.key === "K") void handleAnswer(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleSwapKeep]);
+  }, [handleAnswer]);
 
-  // ── Standalone "next array" ─────────────────────────────────────────────────
-  const handleNext = useCallback(() => {
+  const handlePick = (index: number) => {
+    if (step?.kind === "pick-min") void handleAnswer(index);
+  };
+
+  const handleNext = () => {
     reported.current = false;
-    setGame(buildSortRound(randomAlgo()));
-    setStepIdx(0);
+    setLoading(true);
+    setLoadError(null);
+    setGame(null);
     setMistakes(0);
     setErrorIdx([]);
+    if (mode === "live") return;
+    if (round === undefined) setStandaloneRound((current) => current + 1);
+    else setReload((current) => current + 1);
     onReset?.();
-  }, [onReset]);
-
-  // ── Bar styling ─────────────────────────────────────────────────────────────
-  const barColors = (idx: number) => {
-    if (errorIdx.includes(idx)) return { border: C.error, bg: "rgba(255,107,138,0.18)", text: C.error,  glow: "0 0 16px 4px rgba(255,107,138,0.35)" };
-    if (focus.has(idx))         return { border: C.gold,  bg: "rgba(255,211,110,0.16)", text: C.gold,   glow: "0 0 16px 5px rgba(255,211,110,0.30)" };
-    if (sorted.has(idx))        return { border: C.teal,  bg: "rgba(110,231,196,0.14)", text: C.teal,   glow: "0 0 10px 2px rgba(110,231,196,0.20)" };
-    return                             { border: C.node,  bg: "rgba(127,168,255,0.10)", text: C.textPrimary, glow: "none" };
   };
+
+  const handleRetry = () => {
+    setLoading(true);
+    setLoadError(null);
+    setGame(null);
+    setMistakes(0);
+    setErrorIdx([]);
+    setReload((current) => current + 1);
+  };
+
+  const barColors = (index: number) => {
+    if (errorIdx.includes(index)) {
+      return { border: C.error, bg: "rgba(255,107,138,0.18)", text: C.error, glow: "0 0 16px 4px rgba(255,107,138,0.35)" };
+    }
+    if (focus.has(index)) {
+      return { border: C.gold, bg: "rgba(255,211,110,0.16)", text: C.gold, glow: "0 0 16px 5px rgba(255,211,110,0.30)" };
+    }
+    if (sorted.has(index)) {
+      return { border: C.teal, bg: "rgba(110,231,196,0.14)", text: C.teal, glow: "0 0 10px 2px rgba(110,231,196,0.20)" };
+    }
+    return { border: C.node, bg: "rgba(127,168,255,0.10)", text: C.textPrimary, glow: "none" };
+  };
+
+  if (loading) {
+    return <p className="py-12 text-center text-sm text-textMuted">Loading sorting round…</p>;
+  }
+  if (loadError && !game) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-12">
+        <p role="alert" className="text-sm text-error">{loadError}</p>
+        {mode === "solo" && <Button variant="secondary" onClick={handleRetry}>Try again</Button>}
+      </div>
+    );
+  }
+  if (!game || !info) return null;
 
   const pickMode = step?.kind === "pick-min";
   const [lo, hi] = step?.range ?? [0, -1];
+  const progress = total > 0 ? game.stepIndex / total : 1;
 
-  // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col items-center gap-6 py-4">
-      {/* Header: algorithm + progress */}
+      {loadError && <p role="alert" className="text-sm text-error">{loadError}</p>}
+
       <div className="w-full max-w-xl flex flex-col gap-2">
         <div className="flex items-baseline justify-between gap-3 flex-wrap">
           <h2 className="font-sans text-xl font-bold text-textPrimary">{info.title}</h2>
           <span className="font-mono text-xs text-textMuted">
-            avg. time {info.complexity} · step {Math.min(stepIdx + 1, total)}/{total}
+            avg. time {info.complexity} · step {Math.min(game.stepIndex + 1, total)}/{total}
           </span>
         </div>
         <div className="h-1.5 w-full rounded-full bg-panelBorder/40 overflow-hidden" aria-hidden="true">
           <motion.div
             className="h-full rounded-full bg-teal"
-            animate={{ width: `${(stepIdx / total) * 100}%` }}
+            animate={{ width: `${progress * 100}%` }}
             transition={{ duration: 0.25 }}
           />
         </div>
-        <p className="text-sm text-textMuted" aria-live="polite">{info.rule}</p>
+        <p className="text-sm text-textMuted" aria-live="polite">{step?.prompt ?? info.rule}</p>
+        {validating && <p className="text-xs text-textMuted">Checking your answer…</p>}
       </div>
 
-      {/* Bars */}
       <Card className="w-full max-w-xl !py-8">
         <div
           className="flex items-end justify-center gap-3 sm:gap-4"
@@ -173,31 +352,31 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
           role="group"
           aria-label="Array to sort"
         >
-          {arr.map((item, idx) => {
-            const col       = barColors(idx);
-            const clickable = pickMode && idx >= lo && idx <= hi;
-            const dimmed    = pickMode && !clickable && !done;
-            const height    = MIN_BAR + (item.value / maxVal) * (MAX_BAR - MIN_BAR);
+          {arr.map((item, index) => {
+            const color = barColors(index);
+            const clickable = pickMode && index >= lo && index <= hi && !validating;
+            const dimmed = pickMode && !clickable && !done;
+            const height = MIN_BAR + (item.value / maxVal) * (MAX_BAR - MIN_BAR);
             return (
               <motion.button
                 key={item.id}
                 layout
                 transition={{ type: "spring", stiffness: 380, damping: 30 }}
-                animate={errorIdx.includes(idx) ? { x: [-4, 4, -4, 4, 0] } : { x: 0 }}
+                animate={errorIdx.includes(index) ? { x: [-4, 4, -4, 4, 0] } : { x: 0 }}
                 whileHover={clickable ? { scale: 1.05 } : undefined}
                 whileTap={clickable ? { scale: 0.95 } : undefined}
-                onClick={() => handlePick(idx)}
+                onClick={() => handlePick(index)}
                 disabled={!clickable}
                 aria-label={`Value ${item.value}`}
                 className="flex w-12 sm:w-16 items-start justify-center rounded-lg pt-2 font-mono text-base sm:text-lg font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold"
                 style={{
                   height,
-                  border:     `2px solid ${col.border}`,
-                  background: col.bg,
-                  color:      col.text,
-                  boxShadow:  col.glow,
-                  opacity:    dimmed ? 0.4 : 1,
-                  cursor:     clickable ? "pointer" : "default",
+                  border: `2px solid ${color.border}`,
+                  background: color.bg,
+                  color: color.text,
+                  boxShadow: color.glow,
+                  opacity: dimmed ? 0.4 : 1,
+                  cursor: clickable ? "pointer" : "default",
                   transition: "border-color 0.2s, background 0.2s, box-shadow 0.2s, opacity 0.2s",
                 }}
               >
@@ -208,15 +387,29 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
         </div>
       </Card>
 
-      {/* Controls */}
       {!done && step?.kind === "swap-or-keep" && (
         <div className="flex gap-3">
-          <Button variant="primary" onClick={() => handleSwapKeep(true)} className="gap-2 min-w-[120px] justify-center">
+          <Button variant="primary" disabled={validating} onClick={() => void handleAnswer(true)} className="gap-2 min-w-[120px] justify-center">
             <ArrowLeftRight size={16} aria-hidden="true" /> Swap <kbd className="ml-1 text-[10px] opacity-60">S</kbd>
           </Button>
-          <Button variant="secondary" onClick={() => handleSwapKeep(false)} className="gap-2 min-w-[120px] justify-center">
+          <Button variant="secondary" disabled={validating} onClick={() => void handleAnswer(false)} className="gap-2 min-w-[120px] justify-center">
             <Equal size={16} aria-hidden="true" /> Keep <kbd className="ml-1 text-[10px] opacity-60">K</kbd>
           </Button>
+        </div>
+      )}
+
+      {!done && step?.kind === "pick-choice" && (
+        <div className="flex flex-wrap justify-center gap-3">
+          {step.choices?.map((choice) => (
+            <Button
+              key={choice.value}
+              variant="primary"
+              disabled={validating}
+              onClick={() => void handleAnswer(choice.value)}
+            >
+              {choice.label}
+            </Button>
+          ))}
         </div>
       )}
 
@@ -224,38 +417,42 @@ export default function SortingBoard({ round, onRoundComplete, onReset }: Sortin
         <p className="text-xs uppercase tracking-widest text-textMuted">Tap the smallest bar in the unsorted section</p>
       )}
 
-      {/* Legend */}
       <div className="flex items-center gap-4 flex-wrap justify-center text-xs text-textMuted">
         {[
-          { c: C.node, l: "Unsorted" },
-          { c: C.gold, l: "Comparing" },
-          { c: C.teal, l: "Sorted"    },
-        ].map(({ c, l }) => (
-          <span key={l} className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ background: c }} /> {l}
+          { color: C.node, label: "Unsorted" },
+          { color: C.gold, label: "Current step" },
+          { color: C.teal, label: "Sorted" },
+        ].map(({ color, label }) => (
+          <span key={label} className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} /> {label}
           </span>
         ))}
-        <span className="font-mono">mistakes: <span style={{ color: mistakes ? C.error : C.textMuted }}>{mistakes}</span></span>
+        <span className="font-mono">
+          mistakes: <span style={{ color: mistakes ? C.error : C.textMuted }}>{mistakes}</span>
+        </span>
       </div>
 
-      {/* Sorted banner */}
       <AnimatePresence>
         {done && (
           <motion.div
             initial={{ opacity: 0, y: 12, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0,  scale: 1 }}
-            exit={{    opacity: 0 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0 }}
             transition={{ type: "spring", stiffness: 260, damping: 22 }}
             className="w-full max-w-sm"
           >
             <Card className="flex flex-col items-center gap-3 text-center !border-teal">
               <CheckCircle2 size={36} className="text-teal" aria-hidden="true" />
               <p className="font-sans text-lg font-bold text-textPrimary">Sorted!</p>
-              <p className="font-mono text-sm text-teal">{game.finalArr.map((x) => x.value).join(" ≤ ")}</p>
+              <p className="font-mono text-sm text-teal">{arr.map((item) => item.value).join(" ≤ ")}</p>
               <p className="text-xs text-textMuted">
                 {total} steps · {mistakes} mistake{mistakes === 1 ? "" : "s"}
               </p>
-              {!onRoundComplete && <Button variant="primary" onClick={handleNext}>Next array</Button>}
+              {mode === "live" ? (
+                <p className="text-xs text-textMuted">Waiting for your friend to finish this round…</p>
+              ) : (
+                !onRoundComplete && <Button variant="primary" onClick={handleNext}>Next array</Button>
+              )}
             </Card>
           </motion.div>
         )}

@@ -182,6 +182,7 @@ export function registerSocketHandlers(io: Server) {
     // ── Random matchmaking ──────────────────────────────────────
     socket.on("join_queue", async (payload?: { gameType?: unknown }) => {
       const gameType = typeof payload?.gameType === "string" ? payload.gameType : "";
+      if (gameType === "sorting") return;
       if (!LIVE_GAMES.has(gameType)) {
         socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
         return;
@@ -205,6 +206,7 @@ export function registerSocketHandlers(io: Server) {
     // ── Invite code flow ────────────────────────────────────────
     socket.on("create_room", async (payload?: { gameType?: unknown }) => {
       const gameType = typeof payload?.gameType === "string" ? payload.gameType : "";
+      if (gameType === "sorting") return;
       if (!LIVE_GAMES.has(gameType)) {
         socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
         return;
@@ -216,7 +218,8 @@ export function registerSocketHandlers(io: Server) {
       socket.emit("room_created", { roomId: room.roomId, code: room.code });
     });
 
-    socket.on("join_room", async (payload?: { code?: unknown }) => {
+    socket.on("join_room", async (payload?: { code?: unknown; gameType?: unknown }) => {
+      if (payload?.gameType === "sorting") return;
       const code = typeof payload?.code === "string" ? payload.code.trim() : "";
       if (!/^[A-Za-z0-9]{6}$/.test(code)) {
         socket.emit("join_room_error", { message: "Room not found or already full." });

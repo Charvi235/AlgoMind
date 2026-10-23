@@ -4,7 +4,7 @@
  * Route: /join/:roomCode  (protected — only rendered for logged-in users)
  *
  * Deep-link entry point. A friend clicks a link like:
- *   https://algomind.app/join/ABC123
+ *   https://algomind.app/join/ABC123?gameType=sorting
  *
  * Because this route is wrapped in ProtectedRoute, unauthenticated visitors
  * are automatically redirected to /login with state.from set to this URL.
@@ -16,13 +16,15 @@
  */
 
 import { useEffect } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { isGameType } from "../config/gameRegistry";
 import { motion } from "framer-motion";
 import GlowNode from "../components/ui/GlowNode";
 
 export default function JoinRedirect() {
   const { roomCode } = useParams<{ roomCode: string }>();
-  const navigate     = useNavigate();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     if (!roomCode) {
@@ -32,14 +34,16 @@ export default function JoinRedirect() {
 
     // Forward to JoinRoomScreen with the code pre-filled and auto-submitted.
     // No auth check needed — ProtectedRoute handles that before we render.
+    const requestedGameType = new URLSearchParams(location.search).get("gameType") ?? undefined;
     navigate("/join-room", {
       replace: true,
       state: {
         initialCode: roomCode.toUpperCase().slice(0, 6),
         autoSubmit:  true,
+        ...(isGameType(requestedGameType) ? { gameType: requestedGameType } : {}),
       },
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [location.search, navigate, roomCode]);
 
   // ── Loading screen shown briefly while the redirect fires ─────────────────
   return (

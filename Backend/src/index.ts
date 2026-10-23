@@ -10,6 +10,8 @@ import dijkstraRoutes from "./routes/dijkstraRoutes";
 import bstRoutes from "./routes/bstRoutes";
 import sessionRoutes from "./routes/sessionRoutes";
 import { registerSocketHandlers } from "./sockets/socketHandlers";
+import sortingRoutes from "./routes/sortingRoutes";
+import { registerSortingSocketHandlers } from "./sockets/sortingSocketHandlers";
 
 dotenv.config();
 
@@ -58,7 +60,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/sessions", sessionRoutes);
 app.use("/api/games/dijkstra", dijkstraRoutes);
 app.use("/api/games/bst", bstRoutes);
-
+app.use("/api/games/sorting", sortingRoutes);
 // ─── Error handler (must be last) ──────────────────────────────
 app.use(errorHandler);
 
@@ -66,7 +68,7 @@ const server = http.createServer(app);
 export const io = new SocketIOServer(server, {
   cors: { origin: CLIENT_URL, credentials: true },
 });
-
+registerSortingSocketHandlers(io);
 registerSocketHandlers(io);
 
 async function start() {
