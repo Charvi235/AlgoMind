@@ -5,6 +5,7 @@ import http from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { connectDB } from "./config/db";
 import { errorHandler } from "./middleware/errorHandler";
+import sortingRoutes from "./routes/sortingRoutes";
 
 dotenv.config();
 
@@ -20,6 +21,7 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
+app.use("/api/games/sorting", sortingRoutes);
 // ─── Error handler (must be last) ──────────────────────────────
 app.use(errorHandler);
 
