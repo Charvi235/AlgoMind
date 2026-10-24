@@ -175,7 +175,6 @@ export function generateGraph(round: number): GeneratedGraph {
       edges.push({ source: start, target: extra, weight: randomInt(MIN_WEIGHT, MAX_WEIGHT) });
     }
   }
-
   const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
   let letterIdx = 0;
   const labeled: SimpleNode[] = nodes.map((n) => {
@@ -186,83 +185,139 @@ export function generateGraph(round: number): GeneratedGraph {
 
   return { nodes: labeled, edges, start, target };
 }
-// ─── Floyd-Warshall round generation ──────────────────────────────
-// Reuses generateConnectedGraph() above — no graph-generation logic
-// duplicated. Produces the full sequence of (k, i, j) UPDATE steps
-// only (cells where no improvement happens are skipped entirely, per
-// the design plan — DP should only involve the player when a better
-// path is actually found).
-
-export interface FWStep {
-  k: number;
-  i: number;
-  j: number;
-  newValue: number;
-}
-
-export interface FWRound {
-  labels: string[];
-  initialMatrix: number[][]; // Infinity = no direct edge, 0 = diagonal
-  steps: FWStep[];
-}
-
-export function fwDifficultyForRound(round: number) {
-  const nodeCount = Math.min(4 + Math.floor(round / 2), 6);
-  const extraEdges = Math.min(1 + Math.floor(round / 3), 3);
-  return { nodeCount, extraEdges };
-}
-
-function computeFWSteps(matrix: number[][]): FWStep[] {
-  const n = matrix.length;
-  const working = matrix.map((row) => [...row]);
-  const steps: FWStep[] = [];
-  for (let k = 0; k < n; k++) {
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        const through = working[i][k] + working[k][j];
-        if (through < working[i][j]) {
-          working[i][j] = through;
-          steps.push({ k, i, j, newValue: through });
-        }
-      }
-    }
+function countPaths(
+  current: string,
+  target: string,
+  adj: Map<string, string[]>,
+  visited: Set<string>,
+  path: string[],
+  paths: string[][]
+) {
+  if (current === target) {
+    paths.push([...path]);
+    return;
   }
-  return steps;
+
+  for (const next of adj.get(current) ?? []) {
+    if (visited.has(next)) continue;
+
+    visited.add(next);
+    path.push(next);
+
+    countPaths(next, target, adj, visited, path, paths);
+
+    path.pop();
+    visited.delete(next);
+  }
 }
+function getPathWeight(
+  path: string[],
+  edges: SimpleEdge[]
+): number {
+  let total = 0;
 
-/**
- * Generates a round-appropriate graph as an adjacency matrix, plus the
- * ordered list of cells the Floyd-Warshall algorithm actually updates.
- * Retries with a fresh random graph if a tiny graph happens to need no
- * updates at all (rare, but possible with very few nodes).
- */
-export function generateFloydWarshallRound(round: number): FWRound {
-  const { nodeCount, extraEdges } = fwDifficultyForRound(round);
-  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-
-  let best: { matrix: number[][]; steps: FWStep[] } | null = null;
-
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const { nodes, edges } = generateConnectedGraph(nodeCount, extraEdges);
-    const idx = new Map(nodes.map((n, i) => [n.id, i]));
-    const n = nodes.length;
-    const matrix: number[][] = Array.from({ length: n }, (_, i) =>
-      Array.from({ length: n }, (_, j) => (i === j ? 0 : Infinity))
+  for (let i = 0; i < path.length - 1; i++) {
+    const edge = edges.find(
+      (e) =>
+        (e.source === path[i] && e.target === path[i + 1]) ||
+        (e.target === path[i] && e.source === path[i + 1])
     );
-    for (const e of edges) {
-      const a = idx.get(e.source)!;
-      const b = idx.get(e.target)!;
-      matrix[a][b] = Math.min(matrix[a][b], e.weight);
-      matrix[b][a] = Math.min(matrix[b][a], e.weight);
-    }
-    const steps = computeFWSteps(matrix);
-    if (!best || steps.length > best.steps.length) best = { matrix, steps };
-    if (steps.length >= 3) break;
+
+    if (!edge) return Infinity;
+
+    total += edge.weight;
   }
 
-  return {
-    labels: letters.slice(0, nodeCount),
-    initialMatrix: best!.matrix,
-    steps: best!.steps,
-  };
+  return total;
+}
+export function generateFloydWarshallGraph(): GeneratedGraph {
+  while (true) {
+    const nodeCount = randomInt(5,6 );
+
+    const { nodes, edges } = generateConnectedGraph(
+      nodeCount,
+      randomInt(4, 6)
+    );
+
+    const adj = buildAdjacencyIds(edges);
+
+    // Randomly select S
+    const start = nodes[randomInt(0, nodes.length - 1)].id;
+
+    // Find nodes at least 2 hops away
+    const distances = bfsDistance(start, adj);
+
+    const possibleTargets = nodes.filter(
+      (n) =>
+        n.id !== start &&
+        (distances.get(n.id) ?? 0) >= 2
+    );
+
+    if (possibleTargets.length === 0) continue;
+
+    const target =
+      possibleTargets[
+        randomInt(0, possibleTargets.length - 1)
+      ].id;
+
+    // Find all S → T paths
+    const paths: string[][] = [];
+
+    countPaths(
+      start,
+      target,
+      adj,
+      new Set([start]),
+      [start],
+      paths
+    );
+
+    if (paths.length < 3) continue;
+
+    // Calculate weights
+    const pathWeights = paths.map((path) => ({
+      path,
+      weight: getPathWeight(path, edges),
+    }));
+
+    // We only care about meaningful paths
+    const uniqueWeights = new Set(
+      pathWeights.map((p) => p.weight)
+    );
+
+    if (uniqueWeights.size < 3) continue;
+
+    // Require different hop counts
+    const hopCounts = new Set(
+      paths.map((path) => path.length - 1)
+    );
+
+    if (hopCounts.size < 2) continue;
+
+    // Label nodes
+    const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let letterIndex = 0;
+
+    const labeledNodes = nodes.map((node) => {
+      if (node.id === start) {
+        return { id: node.id, label: "S" };
+      }
+
+      if (node.id === target) {
+        return { id: node.id, label: "T" };
+      }
+
+      return {
+        id: node.id,
+        label: letters[letterIndex++],
+      };
+    });
+
+    return {
+      nodes: labeledNodes,
+      edges,
+      start,
+      target,
+    };
+  }
 }

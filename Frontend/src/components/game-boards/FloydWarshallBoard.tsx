@@ -1,21 +1,22 @@
 /**
  * FloydWarshallBoard.tsx
  *
- * Core gameplay for the Floyd-Warshall Grid. Shows an N×N distance
- * matrix; the player clicks the correct updated value for each cell
- * the algorithm actually improves (cells with no improvement are
- * skipped automatically — see design plan). Reuses the same graph
- * generation utilities as DijkstraBoard.
+ * Core gameplay UI for Floyd-Warshall Grid.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, RotateCcw } from "lucide-react";
+import { getToken } from "../../lib/auth";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
-import { generateFloydWarshallRound, type FWRound } from "../../utils/graphGenerator";
+import { generateFloydWarshallGraph } from "../../utils/graphGenerator";
+import { socket } from "../../lib/socket";
+
+// ─── Theme ────────────────────────────────────────────────────────────────────
 
 const C = {
+  background: "#060709",
   panel: "#0D1130",
   panelBorder: "#2A3166",
   node: "#7FA8FF",
@@ -26,213 +27,1570 @@ const C = {
   error: "#FF6B8A",
 } as const;
 
-export interface FloydWarshallBoardProps {
-  onReset?: () => void;
-  onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
-  round?: number;
+
+// ─── Types / Constants ───────────────────────────────────────────────────────
+
+const INF = Infinity;
+
+interface Step {
+  k: number;
+  i: number;
+  j: number;
+  newValue: number;
+  matrixSnapshot: number[][];
 }
 
-function randomDistractor(correct: number, taken: Set<number>): number {
-  let candidate: number;
-  do {
-    const delta = 1 + Math.floor(Math.random() * 6);
-    candidate = Math.random() < 0.5 ? correct + delta : Math.max(1, correct - delta);
-  } while (taken.has(candidate));
-  return candidate;
-}
+type CellFlash = "correct" | "error" | null;
 
-function buildChips(correct: number): number[] {
-  const taken = new Set<number>([correct]);
-  const d1 = randomDistractor(correct, taken);
-  taken.add(d1);
-  const d2 = randomDistractor(correct, taken);
-  const arr = [correct, d1, d2];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
 
-export default function FloydWarshallBoard({ onReset, onRoundComplete, round = 1 }: FloydWarshallBoardProps) {
-  const [fw] = useState<FWRound>(() => generateFloydWarshallRound(round));
-  const [matrix, setMatrix] = useState<number[][]>(() => fw.initialMatrix.map((r) => [...r]));
-  const [stepIndex, setStepIndex] = useState(0);
-  const [wrongAttempts, setWrongAttempts] = useState(0);
-  const [shakeCell, setShakeCell] = useState<string | null>(null);
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-  const n = fw.labels.length;
-  const done = stepIndex >= fw.steps.length;
-  const currentStep = fw.steps[stepIndex];
+const clone2D = (m: number[][]): number[][] =>
+  m.map((row) => [...row]);
 
-  const chips = useMemo(
-    () => (currentStep ? buildChips(currentStep.newValue) : []),
-    [stepIndex] // eslint-disable-line react-hooks/exhaustive-deps
+const fmt = (v: number): string =>
+  v === INF ? "∞" : String(v);
+
+const formatTime = (s: number): string =>
+  `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(
+    s % 60
+  ).padStart(2, "0")}`;
+
+
+// ─── Create Initial Distance Matrix ───────────────────────────────────────────
+
+function createInitialDistanceMatrix(
+  nodes: { id: string }[],
+  edges: {
+    source: string;
+    target: string;
+    weight: number;
+  }[]
+): number[][] {
+  const n = nodes.length;
+
+  const dist: number[][] = Array.from(
+    { length: n },
+    () => Array(n).fill(INF)
   );
 
-  const handleChipClick = useCallback((value: number) => {
-    if (!currentStep) return;
-    if (value === currentStep.newValue) {
-      setMatrix((prev) => {
-        const next = prev.map((row) => [...row]);
-        next[currentStep.i][currentStep.j] = currentStep.newValue;
-        return next;
-      });
-      const nextIndex = stepIndex + 1;
-      if (nextIndex >= fw.steps.length) {
-        onRoundComplete?.({
-          correctActions: fw.steps.length,
-          totalActions: fw.steps.length + wrongAttempts,
-        });
-      }
-      setStepIndex(nextIndex);
-    } else {
-      setWrongAttempts((w) => w + 1);
-      const key = `${currentStep.i}-${currentStep.j}`;
-      setShakeCell(key);
-      setTimeout(() => setShakeCell(null), 400);
-    }
-  }, [currentStep, stepIndex, fw.steps.length, wrongAttempts, onRoundComplete]);
-
-  const handleReset = useCallback(() => {
-    setMatrix(fw.initialMatrix.map((r) => [...r]));
-    setStepIndex(0);
-    setWrongAttempts(0);
-    setShakeCell(null);
-    onReset?.();
-  }, [fw.initialMatrix, onReset]);
-
-  const isHighlightedRowCol = (idx: number) => currentStep != null && idx === currentStep.k;
-  const isActiveCell = (i: number, j: number) =>
-    currentStep != null && i === currentStep.i && j === currentStep.j;
-
-  // ── Completed overlay (standalone use only, no shell) ─────────────
-  if (done && !onRoundComplete) {
-    return (
-      <AnimatePresence>
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="flex flex-col items-center gap-6 py-16 text-center"
-        >
-          <CheckCircle2 size={56} className="text-teal drop-shadow-[0_0_12px_#6EE7C4]" aria-hidden="true" />
-          <div>
-            <h2 className="font-sans text-2xl font-bold text-textPrimary">All shortest paths computed!</h2>
-            <p className="mt-1 text-sm text-textMuted">
-              {fw.steps.length} updates applied across {n} nodes.
-            </p>
-          </div>
-          <Button variant="secondary" onClick={handleReset} className="gap-2">
-            <RotateCcw size={14} aria-hidden="true" /> Play again
-          </Button>
-        </motion.div>
-      </AnimatePresence>
-    );
+  // Distance from a node to itself
+  for (let i = 0; i < n; i++) {
+    dist[i][i] = 0;
   }
 
+  // Add graph edges
+  for (const edge of edges) {
+    const u = nodes.findIndex(
+      (node) => node.id === edge.source
+    );
+
+    const v = nodes.findIndex(
+      (node) => node.id === edge.target
+    );
+
+    if (u !== -1 && v !== -1) {
+      dist[u][v] = edge.weight;
+      dist[v][u] = edge.weight;
+    }
+  }
+
+  return dist;
+}
+
+
+// ─── Floyd-Warshall Steps ─────────────────────────────────────────────────────
+
+function computeAllSteps(
+  initial: number[][]
+): Step[] {
+  const dist = clone2D(initial);
+  const steps: Step[] = [];
+
+  const n = dist.length;
+
+  for (let k = 0; k < n; k++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+
+        if (i === j) continue;
+
+        const via =
+          dist[i][k] === INF ||
+          dist[k][j] === INF
+            ? INF
+            : dist[i][k] + dist[k][j];
+
+        if (via < dist[i][j]) {
+          dist[i][j] = via;
+
+          steps.push({
+            k,
+            i,
+            j,
+            newValue: via,
+            matrixSnapshot: clone2D(dist),
+          });
+        }
+      }
+    }
+  }
+
+  return steps;
+}
+
+
+// ─── Props ────────────────────────────────────────────────────────────────────
+
+
+export interface FloydWarshallBoardProps {
+  mode?: "solo" | "live";
+  round?: number;
+  onWin?: (seconds: number, score: number) => void;
+  onReset?: () => void;
+
+  onRoundComplete?: (payload: {
+    correctActions: number;
+    totalActions: number;
+  }) => void;
+
+  onRoundChange?: (round: number) => void;
+}
+
+
+
+// ─── Component ─────────────────────────────────────────────────────────────────
+export default function FloydWarshallBoard({
+  mode = "solo",
+  round = 1,
+  onWin,
+  onReset,
+  onRoundComplete,
+  onRoundChange,
+}: FloydWarshallBoardProps) {
+  // Generate ONE graph when this board mounts.
+  const [graph, setGraph] = useState(() =>
+    generateFloydWarshallGraph()
+  );
+
+  // Create labels from the generated graph.
+  const LABELS = useMemo(
+    () => graph.nodes.map((node) => node.label),
+    [graph]
+  );
+
+  const N = graph.nodes.length;
+
+  // Create initial distance matrix from the generated graph.
+  const INITIAL_DIST = useMemo(
+    () =>
+      createInitialDistanceMatrix(
+        graph.nodes,
+        graph.edges
+      ),
+    [graph]
+  );
+
+  // Calculate all Floyd-Warshall updates.
+  const allSteps = useMemo(
+    () => computeAllSteps(INITIAL_DIST),
+    [INITIAL_DIST]
+  );
+
+  const [matrix, setMatrix] = useState<number[][]>(() =>
+    clone2D(INITIAL_DIST)
+  );
+
+  const [stepIdx, setStepIdx] = useState(0);
+
+  const [inputVal, setInputVal] = useState("");
+  const [liveCurrentStep, setLiveCurrentStep] = useState<{
+  k: number;
+  i: number;
+  j: number;
+} | null>(null);
+
+const [liveTotalSteps, setLiveTotalSteps] = useState(0);
+
+  const [cellFlash, setCellFlash] =
+    useState<CellFlash>(null);
+
+  const [confirmed, setConfirmed] =
+    useState<Set<string>>(() => new Set());
+
+  const [seconds, setSeconds] = useState(0);
+
+  const [running, setRunning] = useState(true);
+
+  const [won, setWon] = useState(false);
+
+  const inputRef =
+    useRef<HTMLInputElement>(null);
+
+useEffect(() => {
+  if (mode !== "live") return;
+
+  const handleRoundState = (payload: {
+    nodes: { id: string; label: string }[];
+    edges: { source: string; target: string; weight: number }[];
+    start: string;
+    target: string;
+    initialMatrix: number[][];
+    totalSteps: number;
+    currentStep?: { k: number; i: number; j: number } | null;
+  }) => {
+    setGraph({
+      nodes: payload.nodes,
+      edges: payload.edges,
+      start: payload.start,
+      target: payload.target,
+    });
+
+    setMatrix(payload.initialMatrix.map((row) => [...row]));
+    setLiveTotalSteps(payload.totalSteps);
+    setLiveCurrentStep(payload.currentStep ?? null);
+    setStepIdx(0);
+    setInputVal("");
+    setConfirmed(new Set());
+    setWon(false);
+    setRunning(true);
+  };
+
+  socket.on("match_start", handleRoundState);
+  socket.on("round_state", handleRoundState);
+
+  socket.emit("request_round_state");
+
+  return () => {
+    socket.off("match_start", handleRoundState);
+    socket.off("round_state", handleRoundState);
+  };
+}, [mode]);
+useEffect(() => {
+  if (mode !== "live") return;
+
+  const handleAnswerResult = (payload: {
+    correct: boolean;
+    matrix: number[][];
+    stepIndex: number;
+    totalSteps: number;
+    currentStep: { k: number; i: number; j: number } | null;
+    completed: boolean;
+    score: number;
+  }) => {
+    setMatrix(payload.matrix.map((row) => [...row]));
+    setLiveCurrentStep(payload.currentStep);
+    setLiveTotalSteps(payload.totalSteps);
+    setStepIdx(payload.stepIndex);
+
+    if (payload.correct && liveCurrentStep) {
+      setConfirmed((prev) => {
+        const next = new Set(prev);
+        next.add(`${liveCurrentStep.i}-${liveCurrentStep.j}`);
+        return next;
+      });
+
+      setCellFlash("correct");
+    } else if (!payload.correct) {
+      setCellFlash("error");
+    }
+
+    setTimeout(() => setCellFlash(null), 600);
+
+    if (payload.completed) {
+      setWon(true);
+      setRunning(false);
+
+      onWin?.(seconds, payload.score);
+
+      onRoundComplete?.({
+        correctActions: payload.totalSteps,
+        totalActions: payload.totalSteps,
+      });
+    }
+  };
+
+  socket.on("floyd_answer_result", handleAnswerResult);
+
+  return () => {
+    socket.off("floyd_answer_result", handleAnswerResult);
+  };
+}, [mode, liveCurrentStep, onWin, onRoundComplete, seconds]);
+  // ─── Current Step ───────────────────────────────────────────────────────────
+
+ const currentStep = mode === "live"
+  ? liveCurrentStep
+    ? {
+        ...liveCurrentStep,
+        newValue: 0,
+        matrixSnapshot: matrix,
+      }
+    : null
+  : allSteps[stepIdx] ?? null;
+
+const totalSteps = mode === "live"
+  ? liveTotalSteps
+  : allSteps.length;
+
+
+  // ─── Timer ──────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!running) return;
+
+    const id = setInterval(
+      () => setSeconds((s) => s + 1),
+      1000
+    );
+
+    return () => clearInterval(id);
+  }, [running]);
+
+
+  // Focus input after moving to next step
+  useEffect(() => {
+    if (!won) {
+      inputRef.current?.focus();
+    }
+  }, [stepIdx, won]);
+
+
+  // ─── Submit Answer ──────────────────────────────────────────────────────────
+
+  const handleSubmit = useCallback(() => {
+
+    if (!currentStep || won) return;
+
+   if (mode === "live") {
+  const trimmed = inputVal.trim();
+
+  const value =
+    trimmed === "∞" ||
+    trimmed.toLowerCase() === "inf" ||
+    trimmed.toLowerCase() === "infinity"
+      ? "inf"
+      : Number(trimmed);
+
+  if (typeof value === "number" && Number.isNaN(value)) return;
+
+  socket.emit("submit_floyd_answer", { value });
+  setInputVal("");
+  return;
+}
+
+const parsed =
+  inputVal.trim() === "∞" ||
+  inputVal.trim().toLowerCase() === "inf"
+    ? INF
+    : Number(inputVal.trim());
+
+if (isNaN(parsed)) return;
+
+const correct =
+  parsed === currentStep.newValue;
+    if (correct) {
+
+      setMatrix(
+        currentStep.matrixSnapshot
+      );
+
+      setConfirmed((prev) =>
+        new Set(
+          prev
+        ).add(
+          `${currentStep.i}-${currentStep.j}`
+        )
+      );
+
+      setCellFlash("correct");
+
+      setTimeout(
+        () => setCellFlash(null),
+        600
+      );
+
+      setInputVal("");
+
+      const next = stepIdx + 1;
+
+  
+if (next >= totalSteps) {
+  setWon(true);
+  setRunning(false);
+
+  const finalScore = next * 10;
+
+  onWin?.(seconds, finalScore);
+
+  onRoundComplete?.({
+    correctActions: next,
+    totalActions: totalSteps,
+  });
+
+  const token = getToken();
+
+  if (token) {
+    fetch("http://localhost:5000/api/games/floyd-warshall/solo", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        score: finalScore,
+        completed: true,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const error = await response.text();
+          throw new Error(error || "Failed to save game result");
+        }
+        console.log("Solo Floyd-Warshall result saved");
+      })
+      .catch((error) => {
+        console.error("Failed to save Solo Floyd-Warshall result:", error);
+      });
+  } else {
+    console.warn("No login token found; result was not saved.");
+  }
+}
+else {
+
+        setStepIdx(next);
+      }
+
+    } else {
+
+      setCellFlash("error");
+
+      setTimeout(
+        () => setCellFlash(null),
+        600
+      );
+    }
+
+  }, [
+    currentStep,
+    inputVal,
+    stepIdx,
+    totalSteps,
+    won,
+    seconds,
+    onWin,
+    onRoundComplete,
+  ]);
+
+
+  // ─── Enter Key ──────────────────────────────────────────────────────────────
+
+  const handleKeyDown = (
+    e: React.KeyboardEvent<HTMLInputElement>
+  ) => {
+    if (e.key === "Enter") {
+      handleSubmit();
+    }
+  };
+
+
+  // ─── Reset ──────────────────────────────────────────────────────────────────
+
+  const handleReset = useCallback(() => {
+
+    // Generate a NEW graph on reset
+    const newGraph =
+      generateFloydWarshallGraph();
+
+    setGraph(newGraph);
+
+    setStepIdx(0);
+    setInputVal("");
+    setCellFlash(null);
+    setConfirmed(new Set());
+    setSeconds(0);
+    setRunning(true);
+    setWon(false);
+
+    onReset?.();
+
+  }, [onReset]);
+
+
+  // ─── Cell Styling ───────────────────────────────────────────────────────────
+
+  const isKRow = (r: number) =>
+    currentStep !== null &&
+    r === currentStep.k;
+
+  const isKCol = (c: number) =>
+    currentStep !== null &&
+    c === currentStep.k;
+
+  const isActive = (
+    r: number,
+    c: number
+  ) =>
+    currentStep !== null &&
+    r === currentStep.i &&
+    c === currentStep.j;
+
+  const isConfirmed = (
+    r: number,
+    c: number
+  ) =>
+    confirmed.has(`${r}-${c}`);
+
+
+  function cellBg(
+    r: number,
+    c: number
+  ): string {
+
+    if (isActive(r, c))
+      return "transparent";
+
+    if (isConfirmed(r, c))
+      return "rgba(110,231,196,0.07)";
+
+    if (isKRow(r) || isKCol(c))
+      return "rgba(127,168,255,0.07)";
+
+    return "transparent";
+  }
+
+
+  function cellBorder(
+    r: number,
+    c: number
+  ): string {
+
+    if (isActive(r, c)) {
+
+      if (cellFlash === "correct")
+        return `2px solid ${C.teal}`;
+
+      if (cellFlash === "error")
+        return `2px solid ${C.error}`;
+
+      return `2px solid ${C.gold}`;
+    }
+
+    if (isConfirmed(r, c))
+      return `1px solid rgba(110,231,196,0.25)`;
+
+    return `1px solid ${C.panelBorder}`;
+  }
+
+
+  function cellTextColor(
+    r: number,
+    c: number
+  ): string {
+
+    if (isActive(r, c)) {
+
+      if (cellFlash === "correct")
+        return C.teal;
+
+      if (cellFlash === "error")
+        return C.error;
+
+      return C.gold;
+    }
+
+    if (r === c)
+      return C.textMuted;
+
+    if (isConfirmed(r, c))
+      return C.teal;
+
+    if (matrix[r][c] === INF)
+      return C.textMuted;
+
+    return C.textPrimary;
+  }
+
+
+  // ─── Render ─────────────────────────────────────────────────────────────────
+
   return (
-    <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-      {/* Matrix */}
-      <Card className="flex-1 min-w-0 !p-4 overflow-x-auto">
-        <div className="mb-3 flex items-center gap-2">
-          <span className="text-xs uppercase tracking-widest text-textMuted">Processing via node:</span>
-          <span className="font-mono text-lg font-bold text-gold">
-            {currentStep ? fw.labels[currentStep.k] : "—"}
-          </span>
-        </div>
+    <div className="flex flex-col gap-6">
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
+      {/* ─────────────────────────────────────────────────────────────
+          GRAPH
+      ───────────────────────────────────────────────────────────── */}
 
-        <table className="border-separate" style={{ borderSpacing: 4 }}>
-          <thead>
-            <tr>
-              <th className="w-10 h-10" />
-              {fw.labels.map((label, j) => (
-                <th
-                  key={j}
-                  className="w-12 h-10 font-mono text-xs text-textMuted"
-                  style={{ background: isHighlightedRowCol(j) ? "rgba(255,211,110,0.08)" : "transparent" }}
-                >
-                  {label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {fw.labels.map((rowLabel, i) => (
-              <tr key={i}>
-                <th
-                  className="w-10 h-10 font-mono text-xs text-textMuted"
-                  style={{ background: isHighlightedRowCol(i) ? "rgba(255,211,110,0.08)" : "transparent" }}
-                >
-                  {rowLabel}
-                </th>
-                {fw.labels.map((_, j) => {
-                  const value = matrix[i][j];
-                  const active = isActiveCell(i, j);
-                  const shaking = shakeCell === `${i}-${j}`;
-                  const rowColActive = isHighlightedRowCol(i) || isHighlightedRowCol(j);
-                  return (
-                    <td
-                      key={j}
-                      className="w-12 h-10 text-center align-middle rounded-lg border font-mono text-sm"
-                      style={{
-                        background: active
-                          ? "rgba(255,211,110,0.12)"
-                          : rowColActive
-                          ? "rgba(255,211,110,0.05)"
-                          : C.panel,
-                        borderColor: active ? C.gold : C.panelBorder,
-                        borderWidth: active ? 2 : 1,
-                        color: i === j ? C.textMuted : value === Infinity ? C.textMuted : C.textPrimary,
-                        transform: shaking ? "translateX(2px)" : "none",
-                        transition: "transform 0.1s",
-                      }}
-                    >
-                      {value === Infinity ? "∞" : value}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+      <Card className="!p-4">
 
-      {/* Chip panel */}
-      <div className="w-full lg:w-64 shrink-0 flex flex-col gap-4">
-        <Card className="flex flex-col gap-4">
+        <div className="flex items-center justify-between mb-3">
+
           <div>
-            <p className="text-xs uppercase tracking-widest text-textMuted mb-1">Progress</p>
-            <span className="font-mono text-2xl font-bold text-node">
-              {stepIndex} / {fw.steps.length}
-            </span>
+            <h2 className="text-lg font-bold text-textPrimary">
+              Graph
+            </h2>
+
+            <p className="text-xs text-textMuted">
+              {N} nodes · {graph.edges.length} edges
+            </p>
           </div>
 
-          {currentStep && (
-            <div>
-              <p className="text-xs uppercase tracking-widest text-textMuted mb-2">
-                Update cell ({fw.labels[currentStep.i]}, {fw.labels[currentStep.j]})
-              </p>
-              <div className="flex flex-col gap-2">
-                {chips.map((value, idx) => (
-                  <motion.button
-                    key={`${stepIndex}-${idx}`}
-                    whileHover={{ scale: 1.03 }}
-                    whileTap={{ scale: 0.97 }}
-                    onClick={() => handleChipClick(value)}
-                    className="w-full rounded-lg border border-panelBorder bg-background/60 px-3 py-2 font-mono text-sm font-semibold text-textPrimary hover:border-gold/60 hover:bg-gold/5 transition-colors duration-200 min-h-[44px]"
-                  >
-                    {value}
-                  </motion.button>
-                ))}
-              </div>
-            </div>
-          )}
-        </Card>
+        </div>
 
-        <Button variant="secondary" onClick={handleReset} className="gap-1.5 !px-3 !py-1.5 text-xs w-full justify-center">
-          <RotateCcw size={13} aria-hidden="true" /> Reset
-        </Button>
+        <div
+          className="relative w-full h-[420px] rounded-xl border"
+          style={{
+            borderColor: C.panelBorder,
+            background: C.background,
+          }}
+        >
+
+          {/* Edges */}
+
+          <svg
+            className="absolute inset-0 w-full h-full"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+          >
+
+            {graph.edges.map((edge, index) => {
+
+              const sourceIndex =
+                graph.nodes.findIndex(
+                  (node) =>
+                    node.id === edge.source
+                );
+
+              const targetIndex =
+                graph.nodes.findIndex(
+                  (node) =>
+                    node.id === edge.target
+                );
+
+              const sourceAngle =
+                (2 * Math.PI * sourceIndex) /
+                N;
+
+              const targetAngle =
+                (2 * Math.PI * targetIndex) /
+                N;
+
+              const x1 =
+                50 +
+                35 *
+                  Math.cos(sourceAngle);
+
+              const y1 =
+                50 +
+                35 *
+                  Math.sin(sourceAngle);
+
+              const x2 =
+                50 +
+                35 *
+                  Math.cos(targetAngle);
+
+              const y2 =
+                50 +
+                35 *
+                  Math.sin(targetAngle);
+
+              return (
+                <line
+                  key={index}
+                  x1={`${x1}%`}
+                  y1={`${y1}%`}
+                  x2={`${x2}%`}
+                  y2={`${y2}%`}
+                  stroke={C.panelBorder}
+                  strokeWidth="0.4"
+                />
+              );
+            })}
+
+          </svg>
+
+
+          {/* Edge weights */}
+
+          {graph.edges.map(
+            (edge, index) => {
+
+              const sourceIndex =
+                graph.nodes.findIndex(
+                  (node) =>
+                    node.id === edge.source
+                );
+
+              const targetIndex =
+                graph.nodes.findIndex(
+                  (node) =>
+                    node.id === edge.target
+                );
+
+              const sourceAngle =
+                (2 * Math.PI * sourceIndex) /
+                N;
+
+              const targetAngle =
+                (2 * Math.PI * targetIndex) /
+                N;
+
+              const x1 =
+                50 +
+                35 *
+                  Math.cos(sourceAngle);
+
+              const y1 =
+                50 +
+                35 *
+                  Math.sin(sourceAngle);
+
+              const x2 =
+                50 +
+                35 *
+                  Math.cos(targetAngle);
+
+              const y2 =
+                50 +
+                35 *
+                  Math.sin(targetAngle);
+
+              const midX =
+                (x1 + x2) / 2;
+
+              const midY =
+                (y1 + y2) / 2;
+
+              return (
+                <div
+                  key={`weight-${index}`}
+                  className="absolute px-1.5 py-0.5 rounded bg-slate-900 border text-xs font-mono"
+                  style={{
+                    left: `${midX}%`,
+                    top: `${midY}%`,
+                    transform:
+                      "translate(-50%, -50%)",
+                    borderColor:
+                      C.panelBorder,
+                    color: C.gold,
+                  }}
+                >
+                  {edge.weight}
+                </div>
+              );
+            }
+          )}
+
+
+          {/* Nodes */}
+
+          {graph.nodes.map(
+            (node, index) => {
+
+              const angle =
+                (2 * Math.PI * index) /
+                N;
+
+              const x =
+                50 +
+                35 *
+                  Math.cos(angle);
+
+              const y =
+                50 +
+                35 *
+                  Math.sin(angle);
+
+              const isStart =
+                node.id === graph.start;
+
+              const isTarget =
+                node.id === graph.target;
+
+              return (
+                <div
+                  key={node.id}
+                  className="absolute w-12 h-12 rounded-full flex items-center justify-center font-bold border-2"
+                  style={{
+                    left: `${x}%`,
+                    top: `${y}%`,
+                    transform:
+                      "translate(-50%, -50%)",
+
+                    background:
+                      isStart || isTarget
+                        ? C.teal
+                        : C.panel,
+
+                    borderColor:
+                      isStart || isTarget
+                        ? C.teal
+                        : C.node,
+
+                    color:
+                      isStart || isTarget
+                        ? C.background
+                        : C.node,
+
+                    zIndex: 10,
+                  }}
+                >
+                  {node.label}
+                </div>
+              );
+            }
+          )}
+
+        </div>
+
+
+        {/* Graph legend */}
+
+        <div className="flex gap-4 mt-3 text-xs text-textMuted">
+
+          <span>
+            <span
+              className="font-bold"
+              style={{ color: C.teal }}
+            >
+              S
+            </span>{" "}
+            Start
+          </span>
+
+          <span>
+            <span
+              className="font-bold"
+              style={{ color: C.teal }}
+            >
+              T
+            </span>{" "}
+            Target
+          </span>
+
+          <span>
+            Edge numbers = weight
+          </span>
+
+        </div>
+
+      </Card>
+     {/* ─────────────────────────────────────────────────────────────
+          MATRIX
+      ───────────────────────────────────────────────────────────── */}
+
+      <div className="overflow-x-auto">
+
+        <div
+          className="inline-block rounded-xl border border-panelBorder overflow-hidden shadow-panel"
+          style={{
+            minWidth: "min-content",
+          }}
+          role="grid"
+          aria-label="Floyd-Warshall distance matrix"
+        >
+
+          <table
+            className="border-collapse"
+            style={{
+              tableLayout: "fixed",
+            }}
+          >
+
+            <thead>
+
+              <tr>
+
+                <th
+                  className="font-mono text-xs text-textMuted text-center"
+                  style={{
+                    width: 48,
+                    height: 48,
+                    background: C.panel,
+                    border:
+                      `1px solid ${C.panelBorder}`,
+                    padding: 0,
+                  }}
+                  aria-hidden="true"
+                >
+                  <span
+                    style={{
+                      color: C.textMuted,
+                      fontSize: 10,
+                    }}
+                  >
+                    i\j
+                  </span>
+                </th>
+
+
+                {LABELS.map(
+                  (lbl, j) => (
+
+                    <th
+                      key={j}
+                      style={{
+                        width: 56,
+                        height: 48,
+                        background:
+                          currentStep &&
+                          j === currentStep.k
+                            ? "rgba(127,168,255,0.12)"
+                            : C.panel,
+
+                        border:
+                          `1px solid ${C.panelBorder}`,
+
+                        padding: 0,
+
+                        transition:
+                          "background 0.3s",
+                      }}
+                      scope="col"
+                    >
+
+                      <span
+                        className="font-mono text-sm font-bold"
+                        style={{
+                          color:
+                            currentStep &&
+                            j === currentStep.k
+                              ? C.node
+                              : C.textMuted,
+
+                          display: "block",
+
+                          textAlign: "center",
+                        }}
+                      >
+                        {lbl}
+                      </span>
+
+                    </th>
+
+                  )
+                )}
+
+              </tr>
+
+            </thead>
+
+
+            <tbody>
+
+              {matrix.map(
+                (row, i) => (
+
+                  <tr key={i}>
+
+                    <th
+                      scope="row"
+                      style={{
+                        width: 48,
+                        height: 52,
+
+                        background:
+                          currentStep &&
+                          i === currentStep.k
+                            ? "rgba(127,168,255,0.12)"
+                            : C.panel,
+
+                        border:
+                          `1px solid ${C.panelBorder}`,
+
+                        padding: 0,
+
+                        transition:
+                          "background 0.3s",
+                      }}
+                    >
+
+                      <span
+                        className="font-mono text-sm font-bold"
+                        style={{
+                          color:
+                            currentStep &&
+                            i === currentStep.k
+                              ? C.node
+                              : C.textMuted,
+
+                          display: "block",
+
+                          textAlign: "center",
+                        }}
+                      >
+                        {LABELS[i]}
+                      </span>
+
+                    </th>
+
+
+                    {row.map(
+                      (val, j) => {
+
+                        const active =
+                          isActive(i, j);
+
+                        return (
+                          <td
+                            key={j}
+                            role="gridcell"
+                            aria-label={`${LABELS[i]} to ${LABELS[j]}: ${fmt(val)}`}
+                            style={{
+                              width: 56,
+                              height: 52,
+
+                              background:
+                                cellBg(i, j),
+
+                              border:
+                                cellBorder(i, j),
+
+                              padding: 0,
+
+                              position: "relative",
+
+                              transition:
+                                "background 0.25s, border-color 0.2s",
+
+                              boxShadow:
+                                active
+                                  ? cellFlash ===
+                                    "correct"
+                                    ? "inset 0 0 10px rgba(110,231,196,0.2)"
+                                    : cellFlash ===
+                                      "error"
+                                      ? "inset 0 0 10px rgba(255,107,138,0.2)"
+                                      : "inset 0 0 12px rgba(255,211,110,0.15)"
+                                  : "none",
+                            }}
+                          >
+
+                            {active ? (
+
+                              <motion.div
+                                animate={
+                                  cellFlash ===
+                                  "correct"
+                                    ? {
+                                        backgroundColor:
+                                          [
+                                            "rgba(110,231,196,0.2)",
+                                            "transparent",
+                                          ],
+                                      }
+                                    : cellFlash ===
+                                      "error"
+                                    ? {
+                                        backgroundColor:
+                                          [
+                                            "rgba(255,107,138,0.2)",
+                                            "transparent",
+                                          ],
+                                      }
+                                    : {}
+                                }
+                                transition={{
+                                  duration: 0.5,
+                                }}
+                                style={{
+                                  width: "100%",
+                                  height: "100%",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent:
+                                    "center",
+                                }}
+                              >
+
+                                <input
+                                  ref={inputRef}
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={inputVal}
+                                  onChange={(e) =>
+                                    setInputVal(
+                                      e.target.value
+                                    )
+                                  }
+                                  onKeyDown={
+                                    handleKeyDown
+                                  }
+                                  aria-label={`Enter value for ${LABELS[i]} to ${LABELS[j]}`}
+                                  style={{
+                                    width: "100%",
+                                    height: "100%",
+                                    background:
+                                      "transparent",
+                                    border: "none",
+                                    outline: "none",
+                                    textAlign: "center",
+                                    fontFamily:
+                                      "JetBrains Mono, monospace",
+                                    fontSize: "14px",
+                                    fontWeight: 700,
+                                    color:
+                                      cellFlash ===
+                                      "correct"
+                                        ? C.teal
+                                        : cellFlash ===
+                                          "error"
+                                        ? C.error
+                                        : C.gold,
+                                    caretColor: C.gold,
+                                    padding: 0,
+                                  }}
+                                  placeholder="?"
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                />
+
+                              </motion.div>
+
+                            ) : (
+
+                              <span
+                                style={{
+                                  width: "100%",
+                                  height: "100%",
+                                  display: "flex",
+                                  alignItems:
+                                    "center",
+                                  justifyContent:
+                                    "center",
+                                  fontFamily:
+                                    "JetBrains Mono, monospace",
+                                  fontSize: "13px",
+                                  fontWeight:
+                                    i === j
+                                      ? 400
+                                      : 600,
+                                  color:
+                                    cellTextColor(
+                                      i,
+                                      j
+                                    ),
+                                }}
+                              >
+                                {fmt(val)}
+                              </span>
+
+                            )}
+
+                          </td>
+                        );
+                      }
+                    )}
+
+                  </tr>
+
+                )
+              )}
+
+            </tbody>
+
+          </table>
+
+        </div>
+
       </div>
+     </div>
+     
+
+      {/* ─────────────────────────────────────────────────────────────
+          INTERMEDIATE NODE BANNER
+      ───────────────────────────────────────────────────────────── */}
+
+      <div className="flex items-center gap-3 flex-wrap">
+
+        <div className="rounded-lg border border-panelBorder bg-panel px-4 py-2 flex items-center gap-3">
+
+          <span className="text-sm text-textMuted">
+            Processing intermediate node:
+          </span>
+
+          <span className="font-mono text-lg font-bold text-node">
+            {currentStep
+              ? LABELS[currentStep.k]
+              : "—"}
+          </span>
+
+        </div>
+
+
+        {currentStep && (
+
+          <div className="rounded-lg border border-panelBorder bg-panel px-4 py-2 flex items-center gap-2 text-sm text-textMuted">
+
+            <span>Update</span>
+
+            <span className="font-mono text-textPrimary font-semibold">
+
+              dist[
+              {LABELS[currentStep.i]}
+              ][
+              {LABELS[currentStep.j]}
+              ]
+
+            </span>
+
+            <span>via</span>
+
+            <span className="font-mono text-node font-semibold">
+
+              {LABELS[currentStep.k]}
+
+            </span>
+
+          </div>
+
+        )}
+
+      </div>
+
+
+      {/* ─────────────────────────────────────────────────────────────
+          PROGRESS
+      ───────────────────────────────────────────────────────────── */}
+
+      <Card className="!p-4 flex items-center gap-4">
+
+        <div className="flex-1">
+
+          <div className="flex items-center justify-between mb-1.5">
+
+            <span className="text-xs text-textMuted">
+              Cells completed
+            </span>
+
+            <span className="font-mono text-xs text-textPrimary">
+              {stepIdx} / {totalSteps}
+            </span>
+
+          </div>
+
+          <div className="h-1.5 w-full rounded-full bg-panelBorder overflow-hidden">
+
+            <motion.div
+              className="h-full rounded-full bg-gradient-to-r from-node to-teal"
+              animate={{
+                width: `${
+                  totalSteps > 0
+                    ? (stepIdx / totalSteps) * 100
+                    : 0
+                }%`,
+              }}
+              transition={{
+                duration: 0.4,
+                ease: "easeOut",
+              }}
+            />
+
+          </div>
+
+        </div>
+
+
+        <div className="text-right shrink-0">
+
+          <p className="text-xs text-textMuted">
+            Score
+          </p>
+
+          <p className="font-mono text-lg font-bold text-gold">
+            {stepIdx * 10}
+          </p>
+
+        </div>
+
+
+        <div className="text-right shrink-0">
+
+          <p className="text-xs text-textMuted">
+            Time
+          </p>
+
+          <p className="font-mono text-sm text-textPrimary tabular-nums">
+            {formatTime(seconds)}
+          </p>
+
+        </div>
+
+
+        <Button
+          variant="secondary"
+          onClick={handleReset}
+          className="!px-3 !py-1.5 text-xs gap-1.5 shrink-0"
+        >
+          <RotateCcw
+            size={13}
+            aria-hidden="true"
+          />
+          Reset
+        </Button>
+
+      </Card>
+
+
+      {/* ─────────────────────────────────────────────────────────────
+          INITIAL EDGE WEIGHTS
+      ───────────────────────────────────────────────────────────── */}
+
+      <details className="group">
+
+        <summary className="cursor-pointer text-xs text-textMuted hover:text-textPrimary transition-colors list-none flex items-center gap-1.5 w-fit">
+
+          <span className="group-open:rotate-90 inline-block transition-transform">
+            ▶
+          </span>
+
+          Show initial edge weights
+
+        </summary>
+
+
+        <div className="mt-2 flex flex-wrap gap-2">
+
+          {graph.edges.map(
+            (edge, index) => {
+
+              const source =
+                graph.nodes.find(
+                  (node) =>
+                    node.id === edge.source
+                );
+
+              const target =
+                graph.nodes.find(
+                  (node) =>
+                    node.id === edge.target
+                );
+
+              if (!source || !target)
+                return null;
+
+              return (
+                <span
+                  key={index}
+                  className="rounded-md border border-panelBorder bg-panel px-2 py-1 font-mono text-xs text-textMuted"
+                >
+                  {source.label}→
+                  {target.label}:{" "}
+                  <span className="text-node">
+                    {edge.weight}
+                  </span>
+                </span>
+              );
+            }
+          )}
+
+        </div>
+
+      </details>
+
+
+      
+
+      {/* ─────────────────────────────────────────────────────────────
+          SUBMIT
+      ───────────────────────────────────────────────────────────── */}
+
+      {!won && currentStep && (
+
+        <div className="flex items-center gap-3">
+
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            className="!px-4 !py-2 text-sm"
+          >
+            Confirm value
+          </Button>
+
+          <p className="text-xs text-textMuted font-mono">
+
+            or press{" "}
+
+            <kbd
+              className="rounded border border-panelBorder bg-panel px-1.5 py-0.5 text-textPrimary"
+              style={{
+                fontFamily: "inherit",
+              }}
+            >
+              Enter
+            </kbd>
+
+          </p>
+
+        </div>
+
+      )}
+
+
+      {/* ─────────────────────────────────────────────────────────────
+          LEGEND
+      ───────────────────────────────────────────────────────────── */}
+
+      <div className="flex flex-wrap gap-4 text-xs text-textMuted">
+
+        {[
+          {
+            color: C.gold,
+            label: "Active cell (your input)",
+          },
+          {
+            color: C.teal,
+            label: "Confirmed correct",
+          },
+          {
+            color: C.node,
+            label: "Active k row/column",
+          },
+          {
+            color: C.textMuted,
+            label: "No direct edge (∞)",
+          },
+        ].map(
+          ({ color, label }) => (
+
+            <div
+              key={label}
+              className="flex items-center gap-1.5"
+            >
+
+              <span
+                className="h-3 w-3 rounded-sm"
+                style={{
+                  background: color,
+                  opacity: 0.85,
+                }}
+                aria-hidden="true"
+              />
+
+              {label}
+
+            </div>
+
+          )
+        )}
+
+      </div>
+
+
+      {/* ─────────────────────────────────────────────────────────────
+          SUCCESS
+      ───────────────────────────────────────────────────────────── */}
+
+      <AnimatePresence>
+
+        {won && !onRoundComplete && (
+
+          <motion.div
+            initial={{
+              opacity: 0,
+              scale: 0.92,
+              y: 20,
+            }}
+            animate={{
+              opacity: 1,
+              scale: 1,
+              y: 0,
+            }}
+            exit={{
+              opacity: 0,
+              scale: 0.92,
+              y: 20,
+            }}
+            transition={{
+              type: "spring",
+              stiffness: 260,
+              damping: 22,
+            }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{
+              background:
+                "rgba(6,8,24,0.75)",
+              backdropFilter:
+                "blur(6px)",
+            }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="fw-success-title"
+          >
+
+            <Card
+              className="w-full max-w-sm text-center flex flex-col items-center gap-5"
+              style={{
+                border:
+                  `2px solid ${C.teal}`,
+
+                boxShadow:
+                  "0 0 0 2px rgba(110,231,196,0.25), 0 0 40px 10px rgba(110,231,196,0.15)",
+              }}
+            >
+
+              <CheckCircle2
+                size={48}
+                className="text-teal"
+                aria-hidden="true"
+              />
+
+              <div className="flex flex-col gap-1">
+
+                <h2
+                  id="fw-success-title"
+                  className="font-sans text-xl font-bold text-textPrimary"
+                >
+                  All Shortest Paths Computed!
+                </h2>
+
+                <p className="text-sm text-textMuted">
+
+                  You filled all{" "}
+
+                  <span className="font-mono font-semibold text-textPrimary">
+                    {totalSteps}
+                  </span>{" "}
+
+                  updated cells correctly.
+
+                </p>
+
+                <p className="mt-1 text-sm text-textMuted">
+
+                  Time:{" "}
+
+                  <span className="font-mono font-semibold text-textPrimary">
+                    {formatTime(seconds)}
+                  </span>
+
+                  {" · "}
+
+                  Score:{" "}
+
+                  <span className="font-mono font-bold text-gold">
+                    {totalSteps * 10}
+                  </span>
+
+                </p>
+
+              </div>
+
+              <Button
+                variant="primary"
+                onClick={handleReset}
+              >
+                Play again
+              </Button>
+
+            </Card>
+
+          </motion.div>
+
+        )}
+
+      </AnimatePresence>
+
     </div>
   );
 }
