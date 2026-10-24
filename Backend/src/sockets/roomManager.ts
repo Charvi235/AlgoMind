@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from "crypto";
+import type { BstMatchState } from "./socketHandlers";
 
 export interface Player {
   socketId: string;
@@ -27,6 +28,7 @@ export interface Room {
   round: number;
   currentRoundData: unknown;
   matchEndTimer: NodeJS.Timeout | null;
+  bstState?: BstMatchState;
 }
 
 interface QueuedPlayer {
@@ -56,7 +58,13 @@ export function createRoom(
   hostSocketId: string,
   userId?: string,
   username?: string
-): Room {
+): Room | null {
+  const existingRoomId = socketToRoomId.get(hostSocketId);
+  if (existingRoomId) {
+    const existing = rooms.get(existingRoomId);
+    if (existing) return existing;
+  }
+
   const roomId = randomUUID();
   let code = generateCode();
   while (codeToRoomId.has(code)) code = generateCode(); // avoid rare collision
@@ -87,6 +95,8 @@ export function joinRoomByCode(
   if (!roomId) return null;
   const room = rooms.get(roomId);
   if (!room || room.status !== "waiting" || room.players.length >= 2) return null;
+  if (room.players.some((player) => player.socketId === socketId)) return null;
+  if (userId && room.players.some((player) => player.userId === userId)) return null;
 
   room.players.push(newPlayer(socketId, userId, username));
   socketToRoomId.set(socketId, roomId);

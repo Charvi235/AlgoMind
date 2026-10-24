@@ -26,9 +26,11 @@ import { useAuth } from "../context/AuthContext";
 interface ProtectedRouteProps {
   /** When used as a wrapper, pass children. Omit when used as a layout route. */
   children?: React.ReactNode;
+  /** Allow an explicitly guest-safe route to render without login. */
+  allowGuest?: boolean;
 }
 
-export default function ProtectedRoute({ children }: ProtectedRouteProps) {
+export default function ProtectedRoute({ children, allowGuest = false }: ProtectedRouteProps) {
   const { user, loading } = useAuth();
   const location          = useLocation();
 
@@ -62,8 +64,12 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
     );
   }
 
-  // ── Not authenticated ──────────────────────────────────────────────────────
+  // ── Not authenticated — allow explicit guest-safe routes only ─────────────
   if (!user) {
+    if (allowGuest) {
+      return <>{children ?? <Outlet />}</>;
+    }
+
     return (
       <Navigate
         to="/login"

@@ -673,6 +673,7 @@ export interface BSTBoardProps {
   onReset?:         () => void;
   onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
   round?:           number;
+  roomId?:          string;
   mode?:            "solo" | "live";
   onRoundChange?:   (round: number) => void;
 }
@@ -683,6 +684,7 @@ export default function BSTBoard({
   onReset,
   onRoundComplete,
   round = 1,
+  roomId,
   mode = "solo",
   onRoundChange,
 }: BSTBoardProps) {
@@ -699,6 +701,12 @@ export default function BSTBoard({
   const [hoveredSlot, setHoveredSlot] = useState<SlotInfo | null>(null);
   const [pulseNode,   setPulseNode]   = useState<number | null>(null);
   const [errorSlot,   setErrorSlot]   = useState<SlotInfo | null>(null);
+  const [matchEndsAt, setMatchEndsAt] = useState<number | null>(null);
+  const [moveFeedback, setMoveFeedback] = useState<string | null>(null);
+  const [opponentProgress, setOpponentProgress] = useState<{ username?: string; correctCount: number; attempts: number; accuracy: number; nextExpectedIndex: number; finished: boolean } | null>(null);
+  const [matchFinished, setMatchFinished] = useState(false);
+  const [matchCountdownMs, setMatchCountdownMs] = useState<number | null>(null);
+  const [clockNow, setClockNow] = useState<number>(Date.now());
 
   const svgRef     = useRef<SVGSVGElement>(null);
   const slotsRef   = useRef<SlotInfo[]>([]);
@@ -721,20 +729,23 @@ export default function BSTBoard({
   }, []);
 
   const loadQuestionFromAPI = useCallback(async () => {
-  setLoading(true);
-  setLoadError(null);
-  try {
-    // Destructure numbers array and matchId from the response object
-    const { numbers, matchId: id } = await fetchBSTQuestion(round);
-    if (id) setMatchId(id);
-    
-    // Pass only the numbers array to setupRound
-    setupRound(numbers);
-  } catch (err: any) {
-    setLoadError(err.message || "Failed to load question from API.");
-    setLoading(false);
-  }
-}, [round, setupRound]);
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const { numbers, matchId: id } = await fetchBSTQuestion(round);
+      if (id) setMatchId(id);
+      setupRound(numbers);
+    } catch (err: any) {
+      setLoadError(err.message || "Failed to load question from API.");
+      setLoading(false);
+    }
+  }, [round, setupRound]);
+
+  useEffect(() => {
+    if (mode !== "live" || !matchEndsAt) return;
+    const id = window.setInterval(() => setClockNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [mode, matchEndsAt]);
 
   // ── Solo Mode: Call GET /api/bst/question ──────────────────────────────────
   useEffect(() => {
@@ -745,26 +756,69 @@ export default function BSTBoard({
   // ── Live Mode: Socket Event Listeners ──────────────────────────────────────
   useEffect(() => {
     if (mode !== "live") return;
-    setLoading(true);
 
-    const applyRound = (data: { numbers?: number[]; sequence?: number[]; round: number }) => {
-      const seq = data.numbers || data.sequence;
-      if (seq && seq.length > 0) {
-        setupRound(seq);
-        onRoundChange?.(data.round);
+    const applyMatchStart = (data: { sequence?: number[]; numbers?: number[]; startedAt?: number; endsAt?: number; timeoutMs?: number; roomId?: string; gameType?: string }) => {
+      const seq = data.sequence ?? data.numbers;
+      if (!seq || seq.length === 0) return;
+
+      setMatchEndsAt(data.endsAt ?? (data.startedAt && data.timeoutMs ? data.startedAt + data.timeoutMs : null));
+      setMatchCountdownMs(data.timeoutMs ?? null);
+      setMatchFinished(false);
+      setMoveFeedback(null);
+      setOpponentProgress(null);
+      setupRound(seq);
+      onRoundChange?.(1);
+    };
+
+    const applyProgress = (data: { roomId?: string; gameType?: string; players?: Array<{ socketId?: string; username?: string; correctCount?: number; attempts?: number; accuracy?: number; nextExpectedIndex?: number; finished?: boolean }> }) => {
+      if (!data.players) return;
+      const player = data.players.find((entry) => entry.socketId !== socket.id);
+      if (!player) return;
+      setOpponentProgress({
+        username: player.username,
+        correctCount: player.correctCount ?? 0,
+        attempts: player.attempts ?? 0,
+        accuracy: player.accuracy ?? 0,
+        nextExpectedIndex: player.nextExpectedIndex ?? 0,
+        finished: player.finished ?? false,
+      });
+    };
+
+    const applyMoveResult = (data: { valid?: boolean; reason?: string; detail?: string; finished?: boolean; expectedValue?: number; nextExpectedIndex?: number; correctCount?: number; attempts?: number }) => {
+      if (!data || typeof data.valid === "undefined") return;
+
+      if (!data.valid) {
+        setMoveFeedback(data.detail ?? data.reason ?? "Invalid move.");
+        setErrorSlot(null);
+        return;
+      }
+
+      setMoveFeedback(data.finished ? "You finished the BST!" : `Placed ${data.expectedValue ?? "next value"}.`);
+      setPulseNode(data.expectedValue ?? null);
+      setTimeout(() => setPulseNode(null), 800);
+      if (data.finished) {
+        setMatchFinished(true);
       }
     };
 
-    socket.on("match_start", applyRound);
-    socket.on("round_data", applyRound);
-    socket.on("round_state", applyRound);
+    const applyMatchEnd = (data: { reason?: string; winnerSocketId?: string | null; results?: Array<{ socketId?: string; username?: string | null; correctCount?: number; attempts?: number; accuracy?: number; completed?: boolean }> }) => {
+      const myResult = data.results?.find((entry) => entry.socketId === socket.id);
+      const winnerIsMe = data.winnerSocketId === socket.id;
+      const isTie = data.winnerSocketId === null || data.reason === "timeout" && myResult && data.results?.some((entry) => entry.socketId !== socket.id && entry.correctCount === myResult.correctCount && entry.accuracy === myResult.accuracy);
+      setMatchFinished(true);
+      setMoveFeedback(isTie ? "Match ended in a tie." : winnerIsMe ? "You won the match!" : data.reason === "disconnect" ? "Your opponent disconnected." : "Match finished.");
+    };
 
-    socket.emit("request_round_state");
+    socket.on("bst_match_start", applyMatchStart);
+    socket.on("bst_progress", applyProgress);
+    socket.on("bst_move_result", applyMoveResult);
+    socket.on("bst_match_end", applyMatchEnd);
 
     return () => {
-      socket.off("match_start", applyRound);
-      socket.off("round_data", applyRound);
-      socket.off("round_state", applyRound);
+      socket.off("bst_match_start", applyMatchStart);
+      socket.off("bst_progress", applyProgress);
+      socket.off("bst_move_result", applyMoveResult);
+      socket.off("bst_match_end", applyMatchEnd);
     };
   }, [mode, onRoundChange, setupRound]);
 
@@ -925,11 +979,29 @@ export default function BSTBoard({
   // ── Drag & Drop with POST /api/bst/validate and POST /api/bst/submit ───────
   const handleSvgDrop = async (e: React.DragEvent<SVGSVGElement>) => {
     e.preventDefault();
+    if (mode === "live" && matchFinished) {
+      setMoveFeedback("This match is over.");
+      return;
+    }
+
     const value = dragValRef.current ?? Number(e.dataTransfer.getData("text/plain"));
     const activeSlot = hoveredSlot;
     if (!activeSlot || isNaN(value)) { setHoveredSlot(null); return; }
 
-    // Instant local check followed by API validation
+    if (mode === "live") {
+      socket.emit("bst_submit_move", {
+        value,
+        parentValue: activeSlot.parentValue,
+        side: activeSlot.side,
+        roomId,
+      });
+      setHoveredSlot(null);
+      setDragging(null);
+      dragValRef.current = null;
+      return;
+    }
+
+    // Solo mode remains unchanged.
     const isClientValid = isValidPlacementClient(tree, activeSlot.parentValue, activeSlot.side, value);
     const isApiValid = isClientValid && (await validatePlacementAPI(activeSlot.parentValue, activeSlot.side, value));
 
@@ -945,15 +1017,10 @@ export default function BSTBoard({
       setPulseNode(value);
       setTimeout(() => setPulseNode(null), 800);
 
-      if (mode === "live") {
-        socket.emit("submit_step", { parentValue: activeSlot.parentValue, side: activeSlot.side, value });
-      }
-
       if (nextQueue.length === 0) {
         setWon(true);
         const totalToPlace = numbers.length - 1;
         
-        // POST /api/bst/submit
         submitScoreAPI(newScore, round);
 
         onWin?.(newScore);
@@ -972,6 +1039,10 @@ export default function BSTBoard({
   };
 
   const total = numbers.length > 0 ? numbers.length - 1 : 0;
+  const liveTimeLeftMs = mode === "live" && matchEndsAt ? Math.max(0, matchEndsAt - clockNow) : 0;
+  const liveTimeLeftSeconds = mode === "live"
+    ? (matchEndsAt ? Math.max(0, Math.ceil(liveTimeLeftMs / 1000)) : matchCountdownMs ? Math.max(0, Math.ceil(matchCountdownMs / 1000)) : 0)
+    : 0;
 
   if (loadError) {
     return (
@@ -1042,6 +1113,19 @@ export default function BSTBoard({
           </Button>
         </div>
       </Card>
+
+      {mode === "live" && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-panelBorder bg-panel px-3 py-2 text-xs text-textMuted">
+          <span className="uppercase tracking-[0.16em]">Live BST</span>
+          <span className="font-mono text-textPrimary">{liveTimeLeftSeconds}s left</span>
+          {moveFeedback && <span className="text-node">{moveFeedback}</span>}
+          {opponentProgress && (
+            <span>
+              Opponent: {opponentProgress.username ?? "Opponent"} · {opponentProgress.correctCount}/{opponentProgress.nextExpectedIndex} · {opponentProgress.accuracy}%
+            </span>
+          )}
+        </div>
+      )}
 
       <div>
         <p className="text-xs uppercase tracking-widest text-textMuted mb-3">

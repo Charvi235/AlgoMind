@@ -93,7 +93,7 @@ export default function App() {
           </ProtectedRoute>
         } />
         <Route path="/game/:gameType/match/:roomId" element={
-          <ProtectedRoute>
+          <ProtectedRoute allowGuest={location.pathname.startsWith("/game/bst/") || location.pathname.startsWith("/game/bst") }>
             <AppLayout><PageWrapper><LiveMatch /></PageWrapper></AppLayout>
           </ProtectedRoute>
         } />
@@ -115,24 +115,24 @@ export default function App() {
           </ProtectedRoute>
         } />
         <Route path="/game/:gameType/invite" element={
-          <ProtectedRoute>
+          <ProtectedRoute allowGuest={location.pathname.startsWith("/game/bst/") || location.pathname.startsWith("/game/bst") }>
             <AppLayout><PageWrapper><InviteScreen /></PageWrapper></AppLayout>
           </ProtectedRoute>
         } />
         <Route path="/game/:gameType/join" element={
-          <ProtectedRoute>
+          <ProtectedRoute allowGuest={location.pathname.startsWith("/game/bst/") || location.pathname.startsWith("/game/bst") }>
             <AppLayout><PageWrapper><JoinRoomScreen /></PageWrapper></AppLayout>
           </ProtectedRoute>
         } />
         <Route path="/join-room" element={
-          <ProtectedRoute>
+          <ProtectedRoute allowGuest={false}>
             <AppLayout><PageWrapper><JoinRoomScreen /></PageWrapper></AppLayout>
           </ProtectedRoute>
         } />
 
         {/* ── Deep-link entry point ─────────────────────────────────────── */}
         <Route path="/join/:roomCode" element={
-          <ProtectedRoute>
+          <ProtectedRoute allowGuest={true}>
             <AppLayout><PageWrapper><JoinRedirect /></PageWrapper></AppLayout>
           </ProtectedRoute>
         } />

@@ -44,6 +44,23 @@ interface SortingMatchEndPayload {
   winnerSocketId: string | null;
 }
 
+interface BstMatchPlayer {
+  socketId: string;
+  username: string | null;
+  correctCount: number;
+  attempts: number;
+  accuracy: number;
+  completed: boolean;
+}
+
+interface BstMatchEndPayload {
+  roomId: string;
+  gameType: "bst";
+  reason: "winner" | "timeout" | "disconnect";
+  winnerSocketId: string | null;
+  results: BstMatchPlayer[];
+}
+
 const RESULTS_WAIT_MS = 10000;
 
 function toDijkstraPlayerResult(result: DijkstraMatchEndResult, label: string): PlayerResult {
@@ -56,10 +73,21 @@ function toDijkstraPlayerResult(result: DijkstraMatchEndResult, label: string): 
   };
 }
 
+function toBstPlayerResult(result: BstMatchPlayer, label: string): PlayerResult {
+  return {
+    label,
+    roundsCompleted: result.completed ? 1 : 0,
+    correctCount: result.correctCount,
+    accuracy: result.accuracy,
+    xp: result.correctCount * 10,
+  };
+}
+
 export default function LiveMatch() {
   const { gameType, roomId } = useParams<{ gameType: string; roomId: string }>();
   const navigate = useNavigate();
   const isSortingMatch = gameType === "sorting" && Boolean(roomId);
+  const isBstMatch = gameType === "bst" && Boolean(roomId);
   const opponentLabel = "Opponent";
 
   const [ready, setReady] = useState(false);
@@ -138,7 +166,40 @@ export default function LiveMatch() {
   }, [isSortingMatch, navigate, opponentLabel, roomId]);
 
   useEffect(() => {
-    if (!gameType || isSortingMatch) return;
+    if (!isBstMatch || !roomId) return;
+
+    const onMatchEnd = ({ results, winnerSocketId }: BstMatchEndPayload) => {
+      const player = results.find((item) => item.socketId === socket.id);
+      const opponent = results.find((item) => item.socketId !== socket.id);
+      if (!player || !opponent) return;
+
+      const winner: LiveSessionStats["winner"] = winnerSocketId === null
+        ? "tie"
+        : winnerSocketId === socket.id
+          ? "player"
+          : "opponent";
+      const stats: LiveSessionStats = {
+        mode: "live",
+        gameType: "bst",
+        roomId,
+        player: toBstPlayerResult(player, "You"),
+        opponent: toBstPlayerResult(opponent, opponent.username ?? "Opponent"),
+        winner,
+      };
+      navigate(`/game/bst/results`, { state: stats });
+    };
+
+    const onOpponentLeft = () => setOpponentLeft(true);
+    socket.on("bst_match_end", onMatchEnd);
+    socket.on("opponent_left", onOpponentLeft);
+    return () => {
+      socket.off("bst_match_end", onMatchEnd);
+      socket.off("opponent_left", onOpponentLeft);
+    };
+  }, [isBstMatch, navigate, roomId]);
+
+  useEffect(() => {
+    if (!gameType || isSortingMatch || isBstMatch) return;
 
     const onMatchEnd = ({ results, winnerSocketId }: DijkstraMatchEndPayload) => {
       const player = results.find((item) => item.socketId === socket.id);
@@ -168,7 +229,7 @@ export default function LiveMatch() {
       socket.off("match_end", onMatchEnd);
       socket.off("opponent_left", onOpponentLeft);
     };
-  }, [gameType, isSortingMatch, navigate, roomId]);
+  }, [gameType, isSortingMatch, isBstMatch, navigate, roomId]);
 
   useEffect(() => {
     if (!waitingForResults) return;

@@ -27,15 +27,96 @@ import {
   dijkstraShortestPath,
   isValidNextStep,
 } from "../utils/graphGenerator";
+import {
+  generateBstQuestion,
+  findBstInsertion,
+  insertBstValue,
+  type BSTNode,
+} from "../utils/bstGenerator";
 import User from "../models/User";
 import MatchResult from "../models/MatchResult";
 import { recordActivityAndXP } from "../utils/activityTracker";
 
 const MATCH_SECONDS = 60;
 const DISCONNECT_GRACE_MS = 15000;
+const BST_MATCH_SECONDS = 120;
+const GUEST_ROOM_GAMES = new Set(["bst"]);
 
 // Games that have a live (multiplayer) implementation on the server.
-const LIVE_GAMES = new Set(["dijkstra"]);
+const LIVE_GAMES = new Set(["dijkstra", "bst"]);
+
+export interface BstPlayerMatchState {
+  socketId: string;
+  userId?: string;
+  username?: string;
+  tree: BSTNode | null;
+  nextExpectedIndex: number;
+  correctCount: number;
+  attempts: number;
+  finished: boolean;
+}
+
+export interface BstMatchState {
+  sequence: number[];
+  startedAt: number;
+  endsAt: number;
+  status: "active" | "finished";
+  timer: NodeJS.Timeout | null;
+  completed: boolean;
+  winnerSocketId: string | null;
+  players: BstPlayerMatchState[];
+}
+
+export function sanitizeGuestName(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const cleaned = raw.trim().replace(/[^A-Za-z0-9 _-]/g, "").slice(0, 20);
+  if (!cleaned || cleaned.length < 2) return undefined;
+  return cleaned;
+}
+
+export function isGuestAllowedGameType(gameType: unknown): boolean {
+  return typeof gameType === "string" && GUEST_ROOM_GAMES.has(gameType.toLowerCase());
+}
+
+export function resolveSocketAuth(
+  auth: Record<string, unknown> | undefined,
+  jwtSecret: string,
+  verify: (token: string, secret: string) => unknown = jwt.verify
+): { userId?: string; isGuest?: boolean; guestName?: string; error?: string } {
+  const token = typeof auth?.token === "string" && auth.token.length > 0 ? auth.token : undefined;
+  const guestFlag = auth?.guest === true || auth?.guest === "true";
+
+  if (token) {
+    try {
+      const payload = verify(token, jwtSecret) as { userId?: string };
+      if (!payload.userId) {
+        return { error: "AUTH_REQUIRED" };
+      }
+      return { userId: payload.userId, isGuest: false };
+    } catch {
+      return { error: "AUTH_REQUIRED" };
+    }
+  }
+
+  if (guestFlag) {
+    return { isGuest: true, guestName: sanitizeGuestName(auth?.username ?? auth?.displayName) ?? "Guest" };
+  }
+
+  return { error: "AUTH_REQUIRED" };
+}
+
+export function validateClientIdentity(socket: Socket, payload?: Record<string, unknown>): string | null {
+  if (!payload || !Object.prototype.hasOwnProperty.call(payload, "userId")) return null;
+  const clientUserId = payload.userId;
+  if (typeof clientUserId === "undefined" || clientUserId === null) return null;
+  if (socket.data.isGuest) {
+    return "Guest sockets cannot claim a user ID.";
+  }
+  if (socket.data.userId && socket.data.userId !== clientUserId) {
+    return "User identity is not accepted from the client payload.";
+  }
+  return null;
+}
 
 interface DijkstraRoundData {
   nodes: ReturnType<typeof generateGraph>["nodes"];
@@ -67,24 +148,340 @@ async function lookupUsername(userId: string | undefined): Promise<string | unde
   }
 }
 
+function buildBstPlayerState(
+  socketId: string,
+  userId: string | undefined,
+  username: string | undefined,
+  sequence: number[]
+): BstPlayerMatchState {
+  const rootValue = sequence[0];
+  return {
+    socketId,
+    userId,
+    username,
+    tree: { value: rootValue, left: null, right: null },
+    nextExpectedIndex: 1,
+    correctCount: 1,
+    attempts: 0,
+    finished: sequence.length <= 1,
+  };
+}
+
+function createBstMatchState(room: Room): BstMatchState {
+  const sequence = generateBstQuestion(7);
+  const now = Date.now();
+  return {
+    sequence,
+    startedAt: now,
+    endsAt: now + BST_MATCH_SECONDS * 1000,
+    status: "active",
+    timer: null,
+    completed: false,
+    winnerSocketId: null,
+    players: room.players.map((player) => buildBstPlayerState(player.socketId, player.userId, player.username, sequence)),
+  };
+}
+
+function getBstMatch(room: Room): BstMatchState | null {
+  return room.bstState ?? null;
+}
+
+function getBstPlayerState(room: Room, socketId: string): BstPlayerMatchState | null {
+  const match = getBstMatch(room);
+  if (!match) return null;
+  return match.players.find((p) => p.socketId === socketId) ?? null;
+}
+
+function computeBstAccuracy(player: BstPlayerMatchState): number {
+  const totalAttempts = Math.max(player.attempts, 1);
+  const correctMoves = Math.max(player.correctCount - 1, 0);
+  return Number(((correctMoves / totalAttempts) * 100).toFixed(2));
+}
+
+function makeBstProgressPayload(room: Room) {
+  const match = getBstMatch(room);
+  if (!match) return { roomId: room.roomId, gameType: "bst", players: [] };
+
+  return {
+    roomId: room.roomId,
+    gameType: "bst",
+    players: match.players.map((player) => ({
+      socketId: player.socketId,
+      username: player.username ?? "Guest",
+      correctCount: player.correctCount,
+      attempts: player.attempts,
+      nextExpectedIndex: player.nextExpectedIndex,
+      finished: player.finished,
+      accuracy: computeBstAccuracy(player),
+    })),
+  };
+}
+
+function emitBstProgress(io: Server, room: Room) {
+  io.to(room.roomId).emit("bst_progress", makeBstProgressPayload(room));
+}
+
+function finalizeBstMatch(io: Server, room: Room, reason: "winner" | "timeout" | "disconnect", winnerSocketId?: string | null): void {
+  const match = getBstMatch(room);
+  if (!match || match.completed) return;
+
+  match.completed = true;
+  match.status = "finished";
+  if (match.timer) {
+    clearTimeout(match.timer);
+    match.timer = null;
+  }
+
+  const resolvedWinner = winnerSocketId ?? match.winnerSocketId ?? (() => {
+    const [first, second] = match.players;
+    if (!first || !second) return null;
+    const firstFinished = first.nextExpectedIndex >= match.sequence.length;
+    const secondFinished = second.nextExpectedIndex >= match.sequence.length;
+    if (firstFinished && !secondFinished) return first.socketId;
+    if (secondFinished && !firstFinished) return second.socketId;
+    if (first.correctCount !== second.correctCount) {
+      return first.correctCount > second.correctCount ? first.socketId : second.socketId;
+    }
+    const firstAccuracy = computeBstAccuracy(first);
+    const secondAccuracy = computeBstAccuracy(second);
+    if (firstAccuracy !== secondAccuracy) {
+      return firstAccuracy > secondAccuracy ? first.socketId : second.socketId;
+    }
+    return null;
+  })();
+
+  match.winnerSocketId = resolvedWinner;
+  room.status = "finished";
+
+  const results = match.players.map((player) => ({
+    socketId: player.socketId,
+    username: player.username ?? null,
+    correctCount: player.correctCount,
+    attempts: player.attempts,
+    accuracy: computeBstAccuracy(player),
+    completed: player.finished,
+  }));
+
+  io.to(room.roomId).emit("bst_match_end", {
+    roomId: room.roomId,
+    gameType: "bst",
+    reason,
+    winnerSocketId: resolvedWinner,
+    results,
+  });
+
+  removeRoom(room.roomId);
+}
+
+function startBstMatch(io: Server, room: Room): void {
+  if (!room || room.gameType !== "bst") return;
+  if (room.bstState && room.bstState.completed) return;
+  if (room.players.length < 2) return;
+
+  const match = createBstMatchState(room);
+  room.bstState = match;
+  room.status = "active";
+
+  const startedAt = match.startedAt;
+  const timeoutMs = BST_MATCH_SECONDS * 1000;
+  match.timer = setTimeout(() => {
+    if (!room.bstState || room.bstState.completed) return;
+    finalizeBstMatch(io, room, "timeout");
+  }, timeoutMs);
+
+  io.to(room.roomId).emit("bst_match_start", {
+    roomId: room.roomId,
+    gameType: "bst",
+    sequence: match.sequence,
+    startedAt,
+    endsAt: match.endsAt,
+    timeoutMs,
+  });
+
+  emitBstProgress(io, room);
+}
+
+export function evaluateBstMove(room: Room, socketId: string, payload: unknown): {
+  valid: boolean;
+  reason?: string;
+  expectedValue?: number;
+  actualValue?: number;
+  nextExpectedIndex?: number;
+  player?: BstPlayerMatchState;
+  detail?: string;
+} {
+  const match = getBstMatch(room);
+  if (!match || match.completed || room.status !== "active") {
+    return { valid: false, reason: "match_not_active", detail: "The BST match is not active." };
+  }
+
+  const player = getBstPlayerState(room, socketId);
+  if (!player) {
+    return { valid: false, reason: "not_in_room", detail: "You are not in this room." };
+  }
+  if (player.finished) {
+    return { valid: false, reason: "already_finished", detail: "This player has already completed the BST." };
+  }
+
+  if (!payload || typeof payload !== "object") {
+    return { valid: false, reason: "malformed_payload", detail: "Move payload must be an object." };
+  }
+
+  const value = (payload as { value?: unknown }).value;
+  const parentValue = (payload as { parentValue?: unknown }).parentValue;
+  const side = (payload as { side?: unknown }).side;
+  const roomId = (payload as { roomId?: unknown }).roomId;
+
+  if (roomId != null && String(roomId) !== room.roomId) {
+    return { valid: false, reason: "wrong_room", detail: "Room mismatch." };
+  }
+
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return { valid: false, reason: "invalid_value", detail: "Value must be a finite number." };
+  }
+
+  const expectedValue = match.sequence[player.nextExpectedIndex];
+  if (typeof expectedValue !== "number") {
+    return { valid: false, reason: "already_finished", detail: "No remaining values to place." };
+  }
+
+  if (value !== expectedValue) {
+    return {
+      valid: false,
+      reason: "out_of_order",
+      expectedValue,
+      actualValue: value,
+      nextExpectedIndex: player.nextExpectedIndex,
+      player,
+      detail: `Expected ${expectedValue} next, received ${value}.`,
+    };
+  }
+
+  const hasParent = parentValue !== undefined && parentValue !== null;
+  const sideValue = side === "left" || side === "right" ? side : null;
+  if (hasParent && typeof parentValue !== "number") {
+    return { valid: false, reason: "invalid_parent", detail: "Parent value must be a number when supplied." };
+  }
+  if (sideValue === null && hasParent) {
+    return { valid: false, reason: "invalid_side", detail: "A parent value requires a left/right direction." };
+  }
+
+  const insertion = findBstInsertion(player.tree, value);
+  if (!insertion.valid) {
+    return { valid: false, reason: "invalid_position", detail: "This value cannot be placed in the current BST." };
+  }
+
+  if (hasParent || sideValue) {
+    if (insertion.parentValue !== parentValue || insertion.side !== sideValue) {
+      return {
+        valid: false,
+        reason: "invalid_parent_side",
+        expectedValue,
+        actualValue: value,
+        nextExpectedIndex: player.nextExpectedIndex,
+        player,
+        detail: "The supplied parent/side does not match the BST insertion position.",
+      };
+    }
+  }
+
+  return { valid: true, expectedValue, actualValue: value, nextExpectedIndex: player.nextExpectedIndex, player };
+}
+
+export function applyBstMove(io: Server, room: Room, socketId: string, payload: unknown): { valid: boolean; reason?: string; detail?: string } {
+  const match = getBstMatch(room);
+  if (!match || match.completed || room.status !== "active") {
+    return { valid: false, reason: "match_not_active", detail: "The BST match is not active." };
+  }
+
+  const player = getBstPlayerState(room, socketId);
+  if (!player) {
+    return { valid: false, reason: "not_in_room", detail: "You are not in this room." };
+  }
+
+  const result = evaluateBstMove(room, socketId, payload);
+  if (!result.valid) {
+    player.attempts += 1;
+    const response = {
+      valid: false,
+      reason: result.reason ?? "invalid_move",
+      detail: result.detail ?? "Invalid BST move.",
+      expectedValue: result.expectedValue,
+      nextExpectedIndex: player.nextExpectedIndex,
+      attempts: player.attempts,
+    };
+    io.sockets.sockets.get(socketId)?.emit("bst_move_result", response);
+    emitBstProgress(io, room);
+    return response;
+  }
+
+  const expectedValue = result.expectedValue ?? match.sequence[player.nextExpectedIndex];
+  const insertedTree = insertBstValue(player.tree, expectedValue);
+  if (!insertedTree) {
+    player.attempts += 1;
+    const response = {
+      valid: false,
+      reason: "duplicate_value",
+      detail: "This value has already been placed.",
+      expectedValue,
+      nextExpectedIndex: player.nextExpectedIndex,
+      attempts: player.attempts,
+    };
+    io.sockets.sockets.get(socketId)?.emit("bst_move_result", response);
+    emitBstProgress(io, room);
+    return { valid: false, reason: "duplicate_value", detail: "This value has already been placed." };
+  }
+
+  player.tree = insertedTree;
+  player.nextExpectedIndex += 1;
+  player.correctCount = Math.max(player.nextExpectedIndex, 1);
+  player.attempts += 1;
+  player.finished = player.nextExpectedIndex >= match.sequence.length;
+
+  const response = {
+    valid: true,
+    socketId,
+    expectedValue,
+    nextExpectedIndex: player.nextExpectedIndex,
+    correctCount: player.correctCount,
+    attempts: player.attempts,
+    finished: player.finished,
+  };
+
+  io.sockets.sockets.get(socketId)?.emit("bst_move_result", response);
+  io.to(room.roomId).emit("bst_progress", makeBstProgressPayload(room));
+
+  if (player.finished) {
+    finalizeBstMatch(io, room, "winner", socketId);
+  }
+
+  return { valid: true };
+}
+
 export function registerSocketHandlers(io: Server) {
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error("JWT_SECRET is not set");
 
-  // ── Login required: reject the connection without a valid token ──────
+  // ── Auth policy: valid JWTs remain the default, while guest room-code
+  //    BST flows are allowed only when the client explicitly opts in.
   io.use((socket, next) => {
-    const token = socket.handshake.auth?.token;
-    if (typeof token !== "string" || token.length === 0) {
-      return next(new Error("AUTH_REQUIRED"));
+    const auth = (socket.handshake.auth ?? {}) as Record<string, unknown>;
+    const resolved = resolveSocketAuth(auth, jwtSecret);
+
+    if (resolved.error) {
+      return next(new Error(resolved.error));
     }
-    try {
-      const payload = jwt.verify(token, jwtSecret) as { userId?: string };
-      if (!payload.userId) return next(new Error("AUTH_REQUIRED"));
-      socket.data.userId = payload.userId;
-      next();
-    } catch {
-      next(new Error("AUTH_REQUIRED"));
+
+    if (resolved.userId) {
+      socket.data.userId = resolved.userId;
+      socket.data.isGuest = false;
+    } else {
+      socket.data.userId = undefined;
+      socket.data.isGuest = resolved.isGuest === true;
+      if (resolved.guestName) socket.data.guestName = resolved.guestName;
     }
+
+    next();
   });
 
   function startMatch(io: Server, room: Room) {
@@ -181,7 +578,11 @@ export function registerSocketHandlers(io: Server) {
 
     // ── Random matchmaking ──────────────────────────────────────
     socket.on("join_queue", async (payload?: { gameType?: unknown }) => {
-      const gameType = typeof payload?.gameType === "string" ? payload.gameType : "";
+      const gameType = typeof payload?.gameType === "string" ? payload.gameType.toLowerCase() : "";
+      if (socket.data.isGuest) {
+        socket.emit("live_unavailable", { message: "Guests must use a room code for BST matches." });
+        return;
+      }
       if (gameType === "sorting") return;
       if (!LIVE_GAMES.has(gameType)) {
         socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
@@ -204,37 +605,82 @@ export function registerSocketHandlers(io: Server) {
     });
 
     // ── Invite code flow ────────────────────────────────────────
-    socket.on("create_room", async (payload?: { gameType?: unknown }) => {
-      const gameType = typeof payload?.gameType === "string" ? payload.gameType : "";
+    socket.on("create_room", async (payload?: { gameType?: unknown; userId?: unknown }) => {
+      const gameType = typeof payload?.gameType === "string" ? payload.gameType.toLowerCase() : "";
+      const identityError = validateClientIdentity(socket, payload as Record<string, unknown> | undefined);
+      if (identityError) {
+        socket.emit("live_unavailable", { message: identityError });
+        return;
+      }
+      if (socket.data.isGuest && !isGuestAllowedGameType(gameType)) {
+        socket.emit("live_unavailable", { message: "Guests can only create BST room-code matches." });
+        return;
+      }
       if (gameType === "sorting") return;
       if (!LIVE_GAMES.has(gameType)) {
         socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
         return;
       }
-      const username = await lookupUsername(userId);
 
-      const room = createRoom(gameType, socket.id, userId, username);
-      socket.join(room.roomId);
-      socket.emit("room_created", { roomId: room.roomId, code: room.code });
-    });
-
-    socket.on("join_room", async (payload?: { code?: unknown; gameType?: unknown }) => {
-      if (payload?.gameType === "sorting") return;
-      const code = typeof payload?.code === "string" ? payload.code.trim() : "";
-      if (!/^[A-Za-z0-9]{6}$/.test(code)) {
-        socket.emit("join_room_error", { message: "Room not found or already full." });
+      const username = await lookupUsername(userId) ?? (socket.data.guestName as string | undefined);
+      const existingRoom = getRoomBySocket(socket.id);
+      if (existingRoom && existingRoom.status === "waiting") {
+        socket.join(existingRoom.roomId);
+        socket.emit("room_created", { roomId: existingRoom.roomId, code: existingRoom.code, gameType: existingRoom.gameType });
         return;
       }
-      const username = await lookupUsername(userId);
+      if (existingRoom && existingRoom.status !== "waiting") {
+        socket.emit("live_unavailable", { message: "You already have an active match." });
+        return;
+      }
+
+      const room = createRoom(gameType, socket.id, userId, username);
+      if (!room) {
+        socket.emit("live_unavailable", { message: "You already have an active room." });
+        return;
+      }
+      socket.join(room.roomId);
+      socket.emit("room_created", { roomId: room.roomId, code: room.code, gameType: room.gameType });
+    });
+
+    socket.on("join_room", async (payload?: { code?: unknown; gameType?: unknown; userId?: unknown }) => {
+      const gameType = typeof payload?.gameType === "string" ? payload.gameType.toLowerCase() : "";
+      const identityError = validateClientIdentity(socket, payload as Record<string, unknown> | undefined);
+      if (identityError) {
+        socket.emit("join_room_error", { message: identityError });
+        return;
+      }
+      if (socket.data.isGuest && !isGuestAllowedGameType(gameType)) {
+        socket.emit("join_room_error", { message: "Guests can only join BST room-code matches." });
+        return;
+      }
+      if (payload?.gameType === "sorting") return;
+      const code = typeof payload?.code === "string" ? payload.code.trim().toUpperCase() : "";
+      if (!/^[A-Za-z0-9]{6}$/.test(code)) {
+        socket.emit("join_room_error", { message: "Enter a valid 6-character room code." });
+        return;
+      }
+      if (!LIVE_GAMES.has(gameType)) {
+        socket.emit("join_room_error", { message: "Live matches are not available for this game yet." });
+        return;
+      }
+      const username = await lookupUsername(userId) ?? (socket.data.guestName as string | undefined);
 
       const room = joinRoomByCode(code, socket.id, userId, username);
       if (!room) {
-        socket.emit("join_room_error", { message: "Room not found or already full." });
+        socket.emit("join_room_error", { message: "Room not found, full, or no longer waiting." });
         return;
       }
       socket.join(room.roomId);
-      io.to(room.roomId).emit("matched", { roomId: room.roomId });
-      startMatch(io, room);
+      socket.emit("room_joined", { roomId: room.roomId, gameType: room.gameType, code: room.code });
+      io.to(room.roomId).emit("matched", { roomId: room.roomId, gameType: room.gameType, code: room.code });
+      if (room.gameType === "bst") {
+        const host = room.players[0];
+        if (host) io.to(host.socketId).emit("opponent_joined", { roomId: room.roomId, gameType: room.gameType, code: room.code });
+        startBstMatch(io, room);
+      } else {
+        startMatch(io, room);
+      }
     });
 
     // Host leaves the invite screen before anyone joined: drop the empty
@@ -245,6 +691,20 @@ export function registerSocketHandlers(io: Server) {
         socket.leave(room.roomId);
         removeRoom(room.roomId);
       }
+    });
+
+    socket.on("bst_submit_move", (payload?: unknown) => {
+      const room = getRoomBySocket(socket.id);
+      if (!room || room.gameType !== "bst") {
+        socket.emit("bst_move_result", { valid: false, reason: "not_in_bst_room", detail: "You are not in an active BST room." });
+        return;
+      }
+      const match = getBstMatch(room);
+      if (!match || match.completed || room.status !== "active") {
+        socket.emit("bst_move_result", { valid: false, reason: "match_not_active", detail: "The BST match is not active." });
+        return;
+      }
+      applyBstMove(io, room, socket.id, payload);
     });
 
     // ── Reliable round-state fetch (handles the race where match_start
@@ -307,6 +767,24 @@ export function registerSocketHandlers(io: Server) {
       if (!room || room.status === "finished") return;
 
       const opponent = getOpponent(room, socket.id);
+      if (room.gameType === "bst") {
+        if (opponent) {
+          io.to(opponent.socketId).emit("opponent_left", { gameType: room.gameType, graceMs: DISCONNECT_GRACE_MS });
+          setTimeout(() => {
+            const stillExists = getRoomBySocket(opponent.socketId);
+            if (stillExists && stillExists.roomId === room.roomId && stillExists.gameType === "bst") {
+              const bstMatch = stillExists.bstState;
+              if (bstMatch && !bstMatch.completed) {
+                finalizeBstMatch(io, stillExists, "disconnect", opponent.socketId);
+              }
+            }
+          }, DISCONNECT_GRACE_MS);
+        } else {
+          removeRoom(room.roomId);
+        }
+        return;
+      }
+
       if (opponent) {
         io.to(opponent.socketId).emit("opponent_left", { graceMs: DISCONNECT_GRACE_MS });
         // Grace period: if the disconnected player doesn't return, end

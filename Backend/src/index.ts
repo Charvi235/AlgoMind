@@ -29,7 +29,22 @@ if (process.env.NODE_ENV === "production" && !process.env.CLIENT_URL) {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+const CLIENT_URL = (process.env.CLIENT_URL ?? "http://localhost:5173").trim();
+
+const corsOptions = {
+  origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
+    if (!origin || origin === CLIENT_URL) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error("Origin not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+  optionsSuccessStatus: 204,
+};
 
 // Behind Render's proxy every request looks like it comes from the proxy's IP,
 // which would make per-IP limits count ALL users as one. TRUST_PROXY_HOPS says
@@ -49,7 +64,8 @@ if (process.env.DEBUG_IP === "1") {
 }
 
 
-app.use(cors({ origin: CLIENT_URL, credentials: true }));
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
@@ -66,7 +82,7 @@ app.use(errorHandler);
 
 const server = http.createServer(app);
 export const io = new SocketIOServer(server, {
-  cors: { origin: CLIENT_URL, credentials: true },
+  cors: { origin: CLIENT_URL, credentials: true, methods: ["GET", "POST"], allowedHeaders: ["Content-Type", "Authorization"] },
 });
 registerSortingSocketHandlers(io);
 registerSocketHandlers(io);
