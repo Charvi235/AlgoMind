@@ -7,11 +7,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, RotateCcw } from "lucide-react";
-
+import { getToken } from "../../lib/auth";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
 import { generateFloydWarshallGraph } from "../../utils/graphGenerator";
-
+import { socket } from "../../lib/socket";
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
 
@@ -142,7 +142,10 @@ function computeAllSteps(
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
+
 export interface FloydWarshallBoardProps {
+  mode?: "solo" | "live";
+  round?: number;
   onWin?: (seconds: number, score: number) => void;
   onReset?: () => void;
 
@@ -150,17 +153,21 @@ export interface FloydWarshallBoardProps {
     correctActions: number;
     totalActions: number;
   }) => void;
+
+  onRoundChange?: (round: number) => void;
 }
 
 
-// ─── Component ─────────────────────────────────────────────────────────────────
 
+// ─── Component ─────────────────────────────────────────────────────────────────
 export default function FloydWarshallBoard({
+  mode = "solo",
+  round = 1,
   onWin,
   onReset,
   onRoundComplete,
+  onRoundChange,
 }: FloydWarshallBoardProps) {
-
   // Generate ONE graph when this board mounts.
   const [graph, setGraph] = useState(() =>
     generateFloydWarshallGraph()
@@ -197,6 +204,13 @@ export default function FloydWarshallBoard({
   const [stepIdx, setStepIdx] = useState(0);
 
   const [inputVal, setInputVal] = useState("");
+  const [liveCurrentStep, setLiveCurrentStep] = useState<{
+  k: number;
+  i: number;
+  j: number;
+} | null>(null);
+
+const [liveTotalSteps, setLiveTotalSteps] = useState(0);
 
   const [cellFlash, setCellFlash] =
     useState<CellFlash>(null);
@@ -213,14 +227,110 @@ export default function FloydWarshallBoard({
   const inputRef =
     useRef<HTMLInputElement>(null);
 
+useEffect(() => {
+  if (mode !== "live") return;
 
+  const handleRoundState = (payload: {
+    nodes: { id: string; label: string }[];
+    edges: { source: string; target: string; weight: number }[];
+    start: string;
+    target: string;
+    initialMatrix: number[][];
+    totalSteps: number;
+    currentStep?: { k: number; i: number; j: number } | null;
+  }) => {
+    setGraph({
+      nodes: payload.nodes,
+      edges: payload.edges,
+      start: payload.start,
+      target: payload.target,
+    });
+
+    setMatrix(payload.initialMatrix.map((row) => [...row]));
+    setLiveTotalSteps(payload.totalSteps);
+    setLiveCurrentStep(payload.currentStep ?? null);
+    setStepIdx(0);
+    setInputVal("");
+    setConfirmed(new Set());
+    setWon(false);
+    setRunning(true);
+  };
+
+  socket.on("match_start", handleRoundState);
+  socket.on("round_state", handleRoundState);
+
+  socket.emit("request_round_state");
+
+  return () => {
+    socket.off("match_start", handleRoundState);
+    socket.off("round_state", handleRoundState);
+  };
+}, [mode]);
+useEffect(() => {
+  if (mode !== "live") return;
+
+  const handleAnswerResult = (payload: {
+    correct: boolean;
+    matrix: number[][];
+    stepIndex: number;
+    totalSteps: number;
+    currentStep: { k: number; i: number; j: number } | null;
+    completed: boolean;
+    score: number;
+  }) => {
+    setMatrix(payload.matrix.map((row) => [...row]));
+    setLiveCurrentStep(payload.currentStep);
+    setLiveTotalSteps(payload.totalSteps);
+    setStepIdx(payload.stepIndex);
+
+    if (payload.correct && liveCurrentStep) {
+      setConfirmed((prev) => {
+        const next = new Set(prev);
+        next.add(`${liveCurrentStep.i}-${liveCurrentStep.j}`);
+        return next;
+      });
+
+      setCellFlash("correct");
+    } else if (!payload.correct) {
+      setCellFlash("error");
+    }
+
+    setTimeout(() => setCellFlash(null), 600);
+
+    if (payload.completed) {
+      setWon(true);
+      setRunning(false);
+
+      onWin?.(seconds, payload.score);
+
+      onRoundComplete?.({
+        correctActions: payload.totalSteps,
+        totalActions: payload.totalSteps,
+      });
+    }
+  };
+
+  socket.on("floyd_answer_result", handleAnswerResult);
+
+  return () => {
+    socket.off("floyd_answer_result", handleAnswerResult);
+  };
+}, [mode, liveCurrentStep, onWin, onRoundComplete, seconds]);
   // ─── Current Step ───────────────────────────────────────────────────────────
 
-  const currentStep =
-    allSteps[stepIdx] ?? null;
+ const currentStep = mode === "live"
+  ? liveCurrentStep
+    ? {
+        ...liveCurrentStep,
+        newValue: 0,
+        matrixSnapshot: matrix,
+      }
+    : null
+  : allSteps[stepIdx] ?? null;
 
-  const totalSteps =
-    allSteps.length;
+const totalSteps = mode === "live"
+  ? liveTotalSteps
+  : allSteps.length;
 
 
   // ─── Timer ──────────────────────────────────────────────────────────────────
@@ -251,17 +361,33 @@ export default function FloydWarshallBoard({
 
     if (!currentStep || won) return;
 
-    const parsed =
-      inputVal.trim() === "∞" ||
-      inputVal.trim().toLowerCase() === "inf"
-        ? INF
-        : Number(inputVal.trim());
+   if (mode === "live") {
+  const trimmed = inputVal.trim();
 
-    if (isNaN(parsed)) return;
+  const value =
+    trimmed === "∞" ||
+    trimmed.toLowerCase() === "inf" ||
+    trimmed.toLowerCase() === "infinity"
+      ? "inf"
+      : Number(trimmed);
 
-    const correct =
-      parsed === currentStep.newValue;
+  if (typeof value === "number" && Number.isNaN(value)) return;
 
+  socket.emit("submit_floyd_answer", { value });
+  setInputVal("");
+  return;
+}
+
+const parsed =
+  inputVal.trim() === "∞" ||
+  inputVal.trim().toLowerCase() === "inf"
+    ? INF
+    : Number(inputVal.trim());
+
+if (isNaN(parsed)) return;
+
+const correct =
+  parsed === currentStep.newValue;
     if (correct) {
 
       setMatrix(
@@ -287,23 +413,49 @@ export default function FloydWarshallBoard({
 
       const next = stepIdx + 1;
 
-      if (next >= totalSteps) {
+  
+if (next >= totalSteps) {
+  setWon(true);
+  setRunning(false);
 
-        setWon(true);
+  const finalScore = next * 10;
 
-        setRunning(false);
+  onWin?.(seconds, finalScore);
 
-        onWin?.(
-          seconds,
-          next * 10
-        );
+  onRoundComplete?.({
+    correctActions: next,
+    totalActions: totalSteps,
+  });
 
-        onRoundComplete?.({
-          correctActions: next,
-          totalActions: totalSteps,
-        });
+  const token = getToken();
 
-      } else {
+  if (token) {
+    fetch("http://localhost:5000/api/games/floyd-warshall/solo", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        score: finalScore,
+        completed: true,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const error = await response.text();
+          throw new Error(error || "Failed to save game result");
+        }
+        console.log("Solo Floyd-Warshall result saved");
+      })
+      .catch((error) => {
+        console.error("Failed to save Solo Floyd-Warshall result:", error);
+      });
+  } else {
+    console.warn("No login token found; result was not saved.");
+  }
+}
+else {
 
         setStepIdx(next);
       }
@@ -463,7 +615,7 @@ export default function FloydWarshallBoard({
 
   return (
     <div className="flex flex-col gap-6">
-
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
       {/* ─────────────────────────────────────────────────────────────
           GRAPH
       ───────────────────────────────────────────────────────────── */}
@@ -723,201 +875,7 @@ export default function FloydWarshallBoard({
         </div>
 
       </Card>
-
-
-      {/* ─────────────────────────────────────────────────────────────
-          INTERMEDIATE NODE BANNER
-      ───────────────────────────────────────────────────────────── */}
-
-      <div className="flex items-center gap-3 flex-wrap">
-
-        <div className="rounded-lg border border-panelBorder bg-panel px-4 py-2 flex items-center gap-3">
-
-          <span className="text-sm text-textMuted">
-            Processing intermediate node:
-          </span>
-
-          <span className="font-mono text-lg font-bold text-node">
-            {currentStep
-              ? LABELS[currentStep.k]
-              : "—"}
-          </span>
-
-        </div>
-
-
-        {currentStep && (
-
-          <div className="rounded-lg border border-panelBorder bg-panel px-4 py-2 flex items-center gap-2 text-sm text-textMuted">
-
-            <span>Update</span>
-
-            <span className="font-mono text-textPrimary font-semibold">
-
-              dist[
-              {LABELS[currentStep.i]}
-              ][
-              {LABELS[currentStep.j]}
-              ]
-
-            </span>
-
-            <span>via</span>
-
-            <span className="font-mono text-node font-semibold">
-
-              {LABELS[currentStep.k]}
-
-            </span>
-
-          </div>
-
-        )}
-
-      </div>
-
-
-      {/* ─────────────────────────────────────────────────────────────
-          PROGRESS
-      ───────────────────────────────────────────────────────────── */}
-
-      <Card className="!p-4 flex items-center gap-4">
-
-        <div className="flex-1">
-
-          <div className="flex items-center justify-between mb-1.5">
-
-            <span className="text-xs text-textMuted">
-              Cells completed
-            </span>
-
-            <span className="font-mono text-xs text-textPrimary">
-              {stepIdx} / {totalSteps}
-            </span>
-
-          </div>
-
-          <div className="h-1.5 w-full rounded-full bg-panelBorder overflow-hidden">
-
-            <motion.div
-              className="h-full rounded-full bg-gradient-to-r from-node to-teal"
-              animate={{
-                width: `${
-                  totalSteps > 0
-                    ? (stepIdx / totalSteps) * 100
-                    : 0
-                }%`,
-              }}
-              transition={{
-                duration: 0.4,
-                ease: "easeOut",
-              }}
-            />
-
-          </div>
-
-        </div>
-
-
-        <div className="text-right shrink-0">
-
-          <p className="text-xs text-textMuted">
-            Score
-          </p>
-
-          <p className="font-mono text-lg font-bold text-gold">
-            {stepIdx * 10}
-          </p>
-
-        </div>
-
-
-        <div className="text-right shrink-0">
-
-          <p className="text-xs text-textMuted">
-            Time
-          </p>
-
-          <p className="font-mono text-sm text-textPrimary tabular-nums">
-            {formatTime(seconds)}
-          </p>
-
-        </div>
-
-
-        <Button
-          variant="secondary"
-          onClick={handleReset}
-          className="!px-3 !py-1.5 text-xs gap-1.5 shrink-0"
-        >
-          <RotateCcw
-            size={13}
-            aria-hidden="true"
-          />
-          Reset
-        </Button>
-
-      </Card>
-
-
-      {/* ─────────────────────────────────────────────────────────────
-          INITIAL EDGE WEIGHTS
-      ───────────────────────────────────────────────────────────── */}
-
-      <details className="group">
-
-        <summary className="cursor-pointer text-xs text-textMuted hover:text-textPrimary transition-colors list-none flex items-center gap-1.5 w-fit">
-
-          <span className="group-open:rotate-90 inline-block transition-transform">
-            ▶
-          </span>
-
-          Show initial edge weights
-
-        </summary>
-
-
-        <div className="mt-2 flex flex-wrap gap-2">
-
-          {graph.edges.map(
-            (edge, index) => {
-
-              const source =
-                graph.nodes.find(
-                  (node) =>
-                    node.id === edge.source
-                );
-
-              const target =
-                graph.nodes.find(
-                  (node) =>
-                    node.id === edge.target
-                );
-
-              if (!source || !target)
-                return null;
-
-              return (
-                <span
-                  key={index}
-                  className="rounded-md border border-panelBorder bg-panel px-2 py-1 font-mono text-xs text-textMuted"
-                >
-                  {source.label}→
-                  {target.label}:{" "}
-                  <span className="text-node">
-                    {edge.weight}
-                  </span>
-                </span>
-              );
-            }
-          )}
-
-        </div>
-
-      </details>
-
-
-      {/* ─────────────────────────────────────────────────────────────
+     {/* ─────────────────────────────────────────────────────────────
           MATRIX
       ───────────────────────────────────────────────────────────── */}
 
@@ -1236,7 +1194,202 @@ export default function FloydWarshallBoard({
         </div>
 
       </div>
+     </div>
+     
 
+      {/* ─────────────────────────────────────────────────────────────
+          INTERMEDIATE NODE BANNER
+      ───────────────────────────────────────────────────────────── */}
+
+      <div className="flex items-center gap-3 flex-wrap">
+
+        <div className="rounded-lg border border-panelBorder bg-panel px-4 py-2 flex items-center gap-3">
+
+          <span className="text-sm text-textMuted">
+            Processing intermediate node:
+          </span>
+
+          <span className="font-mono text-lg font-bold text-node">
+            {currentStep
+              ? LABELS[currentStep.k]
+              : "—"}
+          </span>
+
+        </div>
+
+
+        {currentStep && (
+
+          <div className="rounded-lg border border-panelBorder bg-panel px-4 py-2 flex items-center gap-2 text-sm text-textMuted">
+
+            <span>Update</span>
+
+            <span className="font-mono text-textPrimary font-semibold">
+
+              dist[
+              {LABELS[currentStep.i]}
+              ][
+              {LABELS[currentStep.j]}
+              ]
+
+            </span>
+
+            <span>via</span>
+
+            <span className="font-mono text-node font-semibold">
+
+              {LABELS[currentStep.k]}
+
+            </span>
+
+          </div>
+
+        )}
+
+      </div>
+
+
+      {/* ─────────────────────────────────────────────────────────────
+          PROGRESS
+      ───────────────────────────────────────────────────────────── */}
+
+      <Card className="!p-4 flex items-center gap-4">
+
+        <div className="flex-1">
+
+          <div className="flex items-center justify-between mb-1.5">
+
+            <span className="text-xs text-textMuted">
+              Cells completed
+            </span>
+
+            <span className="font-mono text-xs text-textPrimary">
+              {stepIdx} / {totalSteps}
+            </span>
+
+          </div>
+
+          <div className="h-1.5 w-full rounded-full bg-panelBorder overflow-hidden">
+
+            <motion.div
+              className="h-full rounded-full bg-gradient-to-r from-node to-teal"
+              animate={{
+                width: `${
+                  totalSteps > 0
+                    ? (stepIdx / totalSteps) * 100
+                    : 0
+                }%`,
+              }}
+              transition={{
+                duration: 0.4,
+                ease: "easeOut",
+              }}
+            />
+
+          </div>
+
+        </div>
+
+
+        <div className="text-right shrink-0">
+
+          <p className="text-xs text-textMuted">
+            Score
+          </p>
+
+          <p className="font-mono text-lg font-bold text-gold">
+            {stepIdx * 10}
+          </p>
+
+        </div>
+
+
+        <div className="text-right shrink-0">
+
+          <p className="text-xs text-textMuted">
+            Time
+          </p>
+
+          <p className="font-mono text-sm text-textPrimary tabular-nums">
+            {formatTime(seconds)}
+          </p>
+
+        </div>
+
+
+        <Button
+          variant="secondary"
+          onClick={handleReset}
+          className="!px-3 !py-1.5 text-xs gap-1.5 shrink-0"
+        >
+          <RotateCcw
+            size={13}
+            aria-hidden="true"
+          />
+          Reset
+        </Button>
+
+      </Card>
+
+
+      {/* ─────────────────────────────────────────────────────────────
+          INITIAL EDGE WEIGHTS
+      ───────────────────────────────────────────────────────────── */}
+
+      <details className="group">
+
+        <summary className="cursor-pointer text-xs text-textMuted hover:text-textPrimary transition-colors list-none flex items-center gap-1.5 w-fit">
+
+          <span className="group-open:rotate-90 inline-block transition-transform">
+            ▶
+          </span>
+
+          Show initial edge weights
+
+        </summary>
+
+
+        <div className="mt-2 flex flex-wrap gap-2">
+
+          {graph.edges.map(
+            (edge, index) => {
+
+              const source =
+                graph.nodes.find(
+                  (node) =>
+                    node.id === edge.source
+                );
+
+              const target =
+                graph.nodes.find(
+                  (node) =>
+                    node.id === edge.target
+                );
+
+              if (!source || !target)
+                return null;
+
+              return (
+                <span
+                  key={index}
+                  className="rounded-md border border-panelBorder bg-panel px-2 py-1 font-mono text-xs text-textMuted"
+                >
+                  {source.label}→
+                  {target.label}:{" "}
+                  <span className="text-node">
+                    {edge.weight}
+                  </span>
+                </span>
+              );
+            }
+          )}
+
+        </div>
+
+      </details>
+
+
+      
 
       {/* ─────────────────────────────────────────────────────────────
           SUBMIT
