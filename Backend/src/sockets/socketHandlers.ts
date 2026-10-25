@@ -29,6 +29,7 @@ import {
 } from "../utils/graphGenerator";
 import User from "../models/User";
 import MatchResult from "../models/MatchResult";
+import GameSession from "../models/GameSession";
 import { recordActivityAndXP } from "../utils/activityTracker";
 
 const MATCH_SECONDS = 60;
@@ -167,9 +168,25 @@ export function registerSocketHandlers(io: Server) {
           endedAt: new Date(),
         });
 
-        for (const s of loggedIn) {
+               for (const s of loggedIn) {
           await recordActivityAndXP(s.userId!, s.xp);
         }
+
+        await GameSession.create(
+          loggedIn.map((s) => ({
+            userId: s.userId,
+            gameType: room.gameType,
+            mode: "live" as const,
+            status: "completed" as const,
+            roundsCompleted: s.roundsCompleted,
+            accuracy: s.accuracy,
+            xpEarned: s.xp,
+            roomId: room.roomId,
+            startedAt: new Date(Date.now() - MATCH_SECONDS * 1000),
+            completedAt: new Date(),
+            durationSeconds: MATCH_SECONDS,
+          }))
+        );
       } catch (err) {
         console.error("Failed to save match result:", err);
       }

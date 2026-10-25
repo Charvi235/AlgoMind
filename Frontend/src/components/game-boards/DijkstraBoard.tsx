@@ -58,8 +58,10 @@ async function authFetch(url: string, init: { method?: string; body?: string } =
   return res;
 }
 
-async function fetchNewGraph(round: number): Promise<ServerGraph> {
-  const res = await authFetch(`${API_BASE}/api/games/dijkstra/new?round=${round}`);
+async function fetchNewGraph(round: number, sessionId?: string): Promise<ServerGraph> {
+  const qs = new URLSearchParams({ round: String(round) });
+  if (sessionId) qs.set("sessionId", sessionId);
+  const res = await authFetch(`${API_BASE}/api/games/dijkstra/new?${qs.toString()}`);
   if (!res.ok) throw new Error("Failed to fetch graph");
   return res.json();
 }
@@ -181,12 +183,16 @@ export interface DijkstraBoardProps {
   /** "solo" (default) fetches via REST. "live" uses Socket.io, server-pushed rounds. */
   mode?: "solo" | "live";
   /** Live mode only — lets the shell display the server-authoritative round number. */
+    /** Live mode only — lets the shell display the server-authoritative round number. */
   onRoundChange?: (round: number) => void;
+  /** Solo mode: the server-issued session this board plays inside. */
+  sessionId?: string;
+
 }
 
 // ─── Component ─────────────────────────────────────────────────────
 export default function DijkstraBoard({
-  onWin, onReset, onRoundComplete, round = 1, mode = "solo", onRoundChange,
+    onWin, onReset, onRoundComplete, round = 1, mode = "solo", onRoundChange, sessionId,
 }: DijkstraBoardProps) {
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -200,12 +206,12 @@ export default function DijkstraBoard({
   const [flashEdge,  setFlashEdge]  = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
 
-  // ── Solo mode: fetch a fresh graph via REST ─────────────────────
+   // ── Solo mode: fetch a fresh graph via REST ─────────────────────
   useEffect(() => {
     if (mode !== "solo") return;
     let cancelled = false;
     setLoadError(null);
-    fetchNewGraph(round)
+    fetchNewGraph(round, sessionId)
       .then((g) => {
         if (cancelled) return;
         setGraph(g);
@@ -216,7 +222,7 @@ export default function DijkstraBoard({
         if (!cancelled) setLoadError("Couldn't load the graph. Check your connection and try again.");
       });
     return () => { cancelled = true; };
-  }, [round, mode]);
+  }, [round, mode, sessionId]);
 
   // ── Live mode: receive rounds pushed by the server over Socket.io ─
   useEffect(() => {
@@ -295,10 +301,9 @@ export default function DijkstraBoard({
       if (isComplete) {
         if (mode === "solo") setRunning(false);
         onWin?.(seconds + 1);
-        onRoundComplete?.({
-          correctActions: newPath.length - 1,
-          totalActions:   mode === "solo" ? optimalPath.length - 1 : newPath.length - 1,
-        });
+               // One finished round = one scored unit, so the on-screen score is
+        // rounds x 10 and matches the XP the server awards.
+        onRoundComplete?.({ correctActions: 1, totalActions: 1 });
       }
     };
 
