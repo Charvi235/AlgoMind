@@ -33,7 +33,7 @@ export async function recordActivityAndXP(
   await UserActivity.findOneAndUpdate(
     { user_id: userId, activity_date: today },
     { $inc: { submission_count: submissionCount, points_earned: xpEarned } },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: "after" }
   );
 
   const user = await User.findById(userId);
