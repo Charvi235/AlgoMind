@@ -38,12 +38,13 @@ export default function SoloSession() {
     const stats: SoloSessionStats = {
       mode:     "solo",
       gameType,
+      matchIds: gameType === "bst" ? raw.matchIds : undefined,
       player: {
         label:           "You",
         roundsCompleted: raw.roundsCompleted,
         correctCount:    raw.correctCount,
         accuracy:        raw.accuracy,
-        xp:              computeXP(raw.roundsCompleted, raw.accuracy),
+        xp:              raw.xp || (gameType === "bst" ? 0 : computeXP(raw.roundsCompleted, raw.accuracy)),
       },
     };
     navigate(`/game/${gameType}/results`, { state: stats });

@@ -50,9 +50,11 @@ const BOARD_MAP: Record<GameType, BoardComponent> = {
 
 // ─── Session constants ─────────────────────────────────────────────────────────
 const DEFAULT_SESSION_SECONDS = 60;
+const MAX_SOLO_BST_ROUNDS = 4;
 
 // Per-game override — add a line here to give any game a different length.
 const SESSION_SECONDS_BY_GAME: Partial<Record<GameType, number>> = {
+  bst: 120,
   sorting: 420,   // sorting sessions get 5 extra minutes beyond the previous 2-minute limit
 };
 
@@ -63,6 +65,8 @@ export interface SessionEndStats {
   totalCount:      number;
   /** 0–100 */
   accuracy:        number;
+  xp:              number;
+  matchIds:        string[];
 }
 
 // ─── Props ─────────────────────────────────────────────────────────────────────
@@ -105,57 +109,121 @@ export default function GameSessionShell({
   const [playerScore,  setPlayerScore]  = useState(0);
   const [correctTotal, setCorrectTotal] = useState(0);
   const [totalActions, setTotalActions] = useState(0);
+  const [attempts, setAttempts] = useState(0);
+  const [earnedXp, setEarnedXp] = useState(0);
+  const [matchIds, setMatchIds] = useState<string[]>([]);
   // boardKey forces a full remount of the Board on each new round
   const [boardKey, setBoardKey] = useState(0);
 
   // ── Opponent mock score (live mode only) ───────────────────────────────────
   const [opponentScore, setOpponentScore] = useState(0);
+  const [bstRoundSeconds, setBstRoundSeconds] = useState(60);
 
   // ── Session-end ref to avoid stale closure in timer effect ────────────────
   const sessionEndRef = useRef(onSessionEnd);
   useEffect(() => { sessionEndRef.current = onSessionEnd; }, [onSessionEnd]);
 
-  const statsRef = useRef({ round, correctTotal, totalActions });
+  const statsRef = useRef({ round, correctTotal, totalActions, attempts, earnedXp, matchIds });
+  const sessionEndedRef = useRef(false);
   useEffect(() => {
-    statsRef.current = { round, correctTotal, totalActions };
-  }, [round, correctTotal, totalActions]);
+    statsRef.current = { round, correctTotal, totalActions, attempts, earnedXp, matchIds };
+  }, [round, correctTotal, totalActions, attempts, earnedXp, matchIds]);
 
     // ── Countdown (only ticks; never triggers side effects itself) ────────────
   useEffect(() => {
+    if (gameType === "bst" && mode === "solo") return;
+
     const id = setInterval(() => {
       setTimeLeft((t) => (t > 0 ? t - 1 : 0));
     }, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [gameType, mode]);
 
   // ── Session end — a separate effect, so the parent's onSessionEnd
   // (which navigates / sets state) never runs inside a state updater ──────
   useEffect(() => {
+    if (gameType === "bst" && mode === "solo") return;
     if (timeLeft > 0) return;
-    const { round: r, correctTotal: c, totalActions: tot } = statsRef.current;
-    const accuracy = tot > 0 ? Math.round((c / tot) * 100) : 0;
+    const { round: r, correctTotal: c, totalActions: tot, attempts: attemptsCount, earnedXp: xp, matchIds: ids } = statsRef.current;
+    const accuracyDenominator = attemptsCount > 0 ? attemptsCount : tot;
+    const accuracy = accuracyDenominator > 0 ? Math.round((c / accuracyDenominator) * 100) : 0;
     sessionEndRef.current({
       roundsCompleted: r - 1,
       correctCount:    c,
       totalCount:      tot,
       accuracy,
+      xp,
+      matchIds: ids,
     });
-  }, [timeLeft]);
+  }, [timeLeft, gameType, mode]);
 
   // ── Opponent live score (real Socket.io events) ──────────────────
   useEffect(() => {
     if (mode !== "live") return;
-    const handler = ({ score }: { score: number }) => setOpponentScore(score);
-    socket.on("opponent_progress", handler);
-    return () => { socket.off("opponent_progress", handler); };
+
+    const handler = ({ players }: {
+      players?: Array<{ socketId: string; correctCount: number }>;
+    }) => {
+      if (!players) return;
+      const me = players.find((player) => player.socketId === socket.id);
+      const opponent = players.find((player) => player.socketId !== socket.id);
+      if (me) setPlayerScore(me.correctCount * 10);
+      if (opponent) setOpponentScore(opponent.correctCount * 10);
+    };
+
+    const legacyHandler = ({ score }: { score: number }) => setOpponentScore(score);
+    socket.on("bst_progress", handler);
+    socket.on("opponent_progress", legacyHandler);
+    return () => {
+      socket.off("bst_progress", handler);
+      socket.off("opponent_progress", legacyHandler);
+    };
   }, [mode]);
   // ── Round-complete callback (called by the active Board) ──────────────────
-   const handleRoundComplete = useCallback((payload: RoundCompletePayload) => {
-     setCorrectTotal((c) => c + payload.correctActions);
-     setTotalActions((t) => t + payload.totalActions);
-     setPlayerScore((s) => s + (gameType === "sorting" ? 10 : payload.correctActions * 10));
+  const handleRoundComplete = useCallback((payload: RoundCompletePayload) => {
+    if (sessionEndedRef.current) return;
 
-     // Solo mode: shell drives round progression by remounting the Board.
+    const completed = payload.completed !== false;
+    const current = statsRef.current;
+    const nextCorrect = current.correctTotal + (completed ? payload.correctActions : 0);
+    const nextTotal = current.totalActions + (completed ? payload.totalActions : 0);
+    const nextAttempts = current.attempts + (payload.attempts ?? 0);
+    const nextXp = current.earnedXp + (payload.score ?? 0);
+    const nextMatchIds = payload.matchId
+      ? [...current.matchIds, payload.matchId]
+      : current.matchIds;
+
+    setAttempts(nextAttempts);
+    setEarnedXp(nextXp);
+    setMatchIds(nextMatchIds);
+
+    if (completed) {
+      setCorrectTotal(nextCorrect);
+      setTotalActions(nextTotal);
+      setPlayerScore((s) => s + (gameType === "sorting" ? 10 : payload.correctActions * 10));
+    }
+
+    if (gameType === "bst" && mode === "solo") {
+      if (current.round >= MAX_SOLO_BST_ROUNDS) {
+        sessionEndedRef.current = true;
+        setTimeout(() => {
+          const accuracyDenominator = nextAttempts > 0 ? nextAttempts : nextTotal;
+          const accuracy = accuracyDenominator > 0 ? Math.round((nextCorrect / accuracyDenominator) * 100) : 0;
+          sessionEndRef.current({
+            roundsCompleted: current.round,
+            correctCount: nextCorrect,
+            totalCount: nextTotal,
+            accuracy,
+            xp: nextXp,
+            matchIds: nextMatchIds,
+          });
+        }, 800);
+        return;
+      }
+      setBstRoundSeconds(60);
+    }
+
+    // Solo mode: shell drives round progression by remounting the Board.
     // Live mode: the SERVER pushes the next round via Socket.io directly
     // to the Board (see onRoundChange below) — remounting here would
     // tear down the Board's socket listeners at the wrong moment.
@@ -163,7 +231,7 @@ export default function GameSessionShell({
       setTimeout(() => {
         setRound((r) => r + 1);
         setBoardKey((k) => k + 1);
-        }, 800);
+      }, 800);
     }
   }, [gameType, mode]);
 
@@ -228,7 +296,7 @@ export default function GameSessionShell({
             className="font-mono text-3xl font-bold tabular-nums leading-none"
             style={{ color: timerColor, textShadow: timerGlow, transition: "color 0.3s, text-shadow 0.3s" }}
           >
-            {formatCountdown(timeLeft)}
+            {formatCountdown(gameType === "bst" && mode === "solo" ? bstRoundSeconds : timeLeft)}
           </motion.span>
         </motion.div>
 
@@ -284,6 +352,7 @@ export default function GameSessionShell({
           mode={mode}
           roomId={roomId}
           onRoundComplete={handleRoundComplete}
+          onRoundTimerChange={gameType === "bst" && mode === "solo" ? setBstRoundSeconds : undefined}
           onRoundChange={mode === "live" ? handleLiveRoundChange : undefined}
         />
       ) : (

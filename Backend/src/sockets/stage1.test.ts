@@ -91,6 +91,7 @@ function createBstTestRoom() {
   room.players.push(guestPlayer);
   room.status = "active";
   room.bstState = {
+    round: 1,
     sequence: [50, 30, 70, 20, 40, 60, 80],
     startedAt: Date.now(),
     endsAt: Date.now() + 120000,
@@ -108,6 +109,8 @@ function createBstTestRoom() {
         correctCount: 1,
         attempts: 0,
         finished: false,
+        roundCompleted: false,
+        completedRounds: 0,
       },
       {
         socketId: "guest",
@@ -118,6 +121,8 @@ function createBstTestRoom() {
         correctCount: 1,
         attempts: 0,
         finished: false,
+        roundCompleted: false,
+        completedRounds: 0,
       },
     ],
   };
@@ -287,6 +292,19 @@ test("BST room start emits a shared sequence and independent player trees", asyn
     assert.equal(guestState.nextExpectedIndex, 1);
     assert.ok(server.emitted.some((entry: any) => entry.eventName === "bst_match_start"));
 
+    let recoveredState: any;
+    const emitFromSocket = host.emit.bind(host);
+    host.emit = (event: string, payload?: any) => {
+      if (event === "bst_round_state") {
+        recoveredState = payload;
+        return host;
+      }
+      return emitFromSocket(event, payload);
+    };
+    host.emit("request_bst_round_state", { roomId: room.roomId });
+    assert.deepEqual(recoveredState.sequence, room.bstState!.sequence);
+    assert.equal(recoveredState.round, room.bstState!.round);
+
     removeRoom(room.roomId);
   } finally {
     mock.timers.reset();
@@ -295,12 +313,16 @@ test("BST room start emits a shared sequence and independent player trees", asyn
 
 test("BST moves validate and reject invalid or duplicate submissions without mutation", () => {
   const server: any = {
-    emitted: [],
+    emitted: [] as Array<{ roomId: string; eventName: string; payload: any }>,
     sockets: { sockets: new Map<string, any>() },
     on() {},
     use() {},
-    to() {
-      return { emit() {} };
+    to(roomId: string) {
+      return {
+        emit(eventName: string, payload: any) {
+          server.emitted.push({ roomId, eventName, payload });
+        },
+      };
     },
   };
   const room = createBstTestRoom();
@@ -319,6 +341,15 @@ test("BST moves validate and reject invalid or duplicate submissions without mut
   assert.ok(hostState.tree);
   assert.equal(hostState.tree!.left?.value, 30);
   assert.equal(guestState.tree!.left, null);
+  const progress = server.emitted.find((entry: any) => entry.eventName === "bst_progress")?.payload;
+  assert.ok(progress);
+  assert.deepEqual(
+    progress.players.map((player: any) => ({ socketId: player.socketId, correctCount: player.correctCount })),
+    [
+      { socketId: "host", correctCount: 2 },
+      { socketId: "guest", correctCount: 1 },
+    ]
+  );
 
   const outOfOrder = applyBstMove(server, room, "host", { value: 20, parentValue: 50, side: "left" });
   assert.equal(outOfOrder.valid, false);
@@ -356,6 +387,7 @@ test("BST first-to-finish winner and timeout cleanup are authoritative", async (
     match.sequence = [50, 30];
     match.players[0].nextExpectedIndex = 1;
     match.players[1].nextExpectedIndex = 1;
+    match.players[0].completedRounds = 3;
     match.players[0].tree = { value: 50, left: null, right: null };
     match.players[1].tree = { value: 50, left: null, right: null };
 
@@ -390,8 +422,24 @@ test("BST first-to-finish winner and timeout cleanup are authoritative", async (
     timeoutRoom.bstState!.players[1].nextExpectedIndex = 2;
 
     mock.timers.tick(120000);
-    assert.ok(timeoutServer.emitted.some((entry: any) => entry.eventName === "bst_match_end" && entry.payload.reason === "timeout"));
-    assert.equal(timeoutServer.emitted.find((entry: any) => entry.eventName === "bst_match_end")?.payload.winnerSocketId, "timeout-host");
+    const timeoutEndEvents = timeoutServer.emitted.filter((entry: any) => entry.eventName === "bst_match_end");
+    assert.equal(timeoutEndEvents.length, 1);
+    assert.equal(timeoutEndEvents[0].payload.reason, "timeout");
+    assert.equal(timeoutEndEvents[0].payload.winnerSocketId, "timeout-host");
+    assert.deepEqual(
+      timeoutEndEvents[0].payload.results.map((player: any) => ({
+        socketId: player.socketId,
+        roundsCompleted: player.roundsCompleted,
+        correctCount: player.correctCount,
+        attempts: player.attempts,
+        accuracy: player.accuracy,
+        xp: player.xp,
+      })),
+      [
+        { socketId: "timeout-host", roundsCompleted: 0, correctCount: 3, attempts: 6, accuracy: 33.33, xp: 30 },
+                { socketId: "timeout-guest", roundsCompleted: 0, correctCount: 2, attempts: 5, accuracy: 20, xp: 20 },
+      ]
+    );
     assert.equal(getRoomBySocket("timeout-host"), null);
   } finally {
     mock.timers.reset();

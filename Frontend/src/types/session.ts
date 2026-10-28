@@ -29,6 +29,7 @@ export interface PlayerResult {
 export interface SoloSessionStats {
   mode:    "solo";
   gameType: string;
+  matchIds?: string[];
   player:  PlayerResult;
 }
 
@@ -58,6 +59,11 @@ export type SessionStats = SoloSessionStats | LiveSessionStats;
 export interface RoundCompletePayload {
   correctActions: number;
   totalActions:   number;
+  completed?: boolean;
+  matchId?: string;
+  score?: number;
+  accuracy?: number;
+  attempts?: number;
 }
 
 // ─── XP calculation ───────────────────────────────────────────────────────────

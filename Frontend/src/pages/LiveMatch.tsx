@@ -51,6 +51,8 @@ interface BstMatchPlayer {
   attempts: number;
   accuracy: number;
   completed: boolean;
+  roundsCompleted?: number;
+  xp?: number;
 }
 
 interface BstMatchEndPayload {
@@ -76,10 +78,10 @@ function toDijkstraPlayerResult(result: DijkstraMatchEndResult, label: string): 
 function toBstPlayerResult(result: BstMatchPlayer, label: string): PlayerResult {
   return {
     label,
-    roundsCompleted: result.completed ? 1 : 0,
+    roundsCompleted: result.roundsCompleted ?? (result.completed ? 1 : 0),
     correctCount: result.correctCount,
     accuracy: result.accuracy,
-    xp: result.correctCount * 10,
+    xp: result.xp ?? Math.max(0, result.correctCount - (result.roundsCompleted ?? 0)) * 10,
   };
 }
 

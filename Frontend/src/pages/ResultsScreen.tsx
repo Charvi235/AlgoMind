@@ -90,10 +90,7 @@ function SoloResultCard({ stats }: { stats: SoloSessionStats }) {
 
         {/* XP note */}
         <p className="text-xs text-textMuted text-center">
-          {/* TODO: XP should be awarded server-side and verified against the session record.
-              This client-side value is display-only until the POST /api/sessions/complete
-              endpoint exists and returns the authoritative XP grant. */}
-          XP is provisional until confirmed by the server.
+          XP is calculated from your saved BST round scores.
         </p>
       </Card>
     </motion.div>
@@ -182,7 +179,11 @@ export default function ResultsScreen() {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ correctCount: stats.player.correctCount }),
+      body: JSON.stringify({
+        correctCount: stats.player.correctCount,
+        gameType: stats.gameType,
+        matchIds: stats.mode === "solo" ? stats.matchIds ?? [] : [],
+      }),
     }).catch(() => {
       // Non-critical — results screen still shows even if save fails
     });

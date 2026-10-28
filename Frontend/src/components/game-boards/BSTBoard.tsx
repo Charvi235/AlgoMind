@@ -493,6 +493,7 @@ import { CheckCircle2, RotateCcw, TreePine } from "lucide-react";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
 import { socket } from "../../lib/socket";
+import { getToken } from "../../lib/auth";
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
 const C = {
@@ -513,12 +514,18 @@ const NODE_R = 22;
 const LEVEL_H = 80;
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
+const formatCountdown = (seconds: number) => {
+  const safeSeconds = Math.max(0, seconds);
+  return `00:${String(safeSeconds).padStart(2, "0")}`;
+};
+
 // ─── API Integration Functions ───────────────────────────────────────────────
 export interface BSTRoundResponse {
   success?: boolean;
   data?: {
     matchId?: string;
     numbers?: number[];
+    deadlineAt?: string;
   };
 }
 
@@ -571,21 +578,24 @@ export interface ValidateResponse {
 //   }
 // }
 // 1. GET /api/games/bst/question
-async function fetchBSTQuestion(round: number): Promise<{ numbers: number[]; matchId?: string }> {
-  const res = await fetch(`${API_BASE}/api/games/bst/question?round=${round}`);
+async function fetchBSTQuestion(round: number, requestId: string): Promise<{ numbers: number[]; matchId?: string; deadlineAt?: string }> {
+  const params = new URLSearchParams({ round: String(round), requestId });
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/api/games/bst/question?${params}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
   if (!res.ok) throw new Error(`Failed to fetch question: ${res.statusText}`);
   
   const json: BSTRoundResponse = await res.json();
-
-  // Extract from { success: true, data: { matchId: "...", numbers: [...] } }
   const sequence = json?.data?.numbers || [];
   const matchId = json?.data?.matchId;
+  const deadlineAt = json?.data?.deadlineAt;
 
   if (!Array.isArray(sequence) || sequence.length === 0) {
     throw new Error("API returned an empty question sequence.");
   }
 
-  return { numbers: sequence, matchId };
+  return { numbers: sequence, matchId, deadlineAt };
 }
 
 // 2. POST /api/games/bst/validate
@@ -610,16 +620,38 @@ async function validatePlacementAPI(
 }
 
 // 3. POST /api/games/bst/submit
-async function submitScoreAPI(score: number, round: number, matchId?: string | null) {
-  try {
-    await fetch(`${API_BASE}/api/games/bst/submit`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ matchId, score, round }),
-    });
-  } catch (err) {
-    console.error("Failed to submit score:", err);
+async function submitScoreAPI(
+  matchId: string | null,
+  completed: boolean,
+  placed: number[],
+  attempts: number
+): Promise<{ score: number; completed: boolean; accuracy: number }> {
+  if (!matchId) {
+    throw new Error("Cannot submit BST score: matchId is missing.");
   }
+
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/api/games/bst/submit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ matchId, completed, placed, attempts }),
+  });
+
+  const payload = await res.json().catch(() => null) as
+    | { success?: boolean; message?: string; data?: { score?: number; completed?: boolean; accuracy?: number } }
+    | null;
+
+  if (!res.ok || payload?.success !== true) {
+    throw new Error(payload?.message || `Failed to submit BST score: ${res.status}`);
+  }
+  return {
+    score: payload.data?.score ?? 0,
+    completed: payload.data?.completed === true,
+    accuracy: payload.data?.accuracy ?? 0,
+  };
 }
 // ─── Helper Types & Functions ────────────────────────────────────────────────
 interface BSTNode {
@@ -671,7 +703,8 @@ interface SlotInfo {
 export interface BSTBoardProps {
   onWin?:           (score: number) => void;
   onReset?:         () => void;
-  onRoundComplete?: (payload: { correctActions: number; totalActions: number }) => void;
+  onRoundComplete?: (payload: { correctActions: number; totalActions: number; completed?: boolean; matchId?: string; score?: number; accuracy?: number; attempts?: number }) => void;
+  onRoundTimerChange?: (seconds: number) => void;
   round?:           number;
   roomId?:          string;
   mode?:            "solo" | "live";
@@ -683,6 +716,7 @@ export default function BSTBoard({
   onWin,
   onReset,
   onRoundComplete,
+  onRoundTimerChange,
   round = 1,
   roomId,
   mode = "solo",
@@ -696,7 +730,8 @@ export default function BSTBoard({
   const [won,       setWon]       = useState(false);
   const [loading,   setLoading]   = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
- const [, setMatchId] = useState<string | null>(null);
+  const [matchId, setMatchId] = useState<string | null>(null);
+  const [roundRemainingSeconds, setRoundRemainingSeconds] = useState(60);
   const [dragging,    setDragging]    = useState<number | null>(null);
   const [hoveredSlot, setHoveredSlot] = useState<SlotInfo | null>(null);
   const [pulseNode,   setPulseNode]   = useState<number | null>(null);
@@ -711,6 +746,11 @@ export default function BSTBoard({
   const svgRef     = useRef<SVGSVGElement>(null);
   const slotsRef   = useRef<SlotInfo[]>([]);
   const dragValRef = useRef<number | null>(null);
+  const roundRequestIdRef = useRef(crypto.randomUUID());
+  const placedRef = useRef<number[]>([]);
+  const roundDeadlineRef = useRef<number | null>(null);
+  const roundFinalizedRef = useRef(false);
+  const roundAttemptsRef = useRef(0);
 
   const setupRound = useCallback((nums: number[]) => {
     if (!nums || nums.length === 0) return;
@@ -718,6 +758,7 @@ export default function BSTBoard({
     const remaining = nums.slice(1);
     setNumbers(nums);
     setQueue(remaining);
+    placedRef.current = [root];
     setPlaced([root]);
     setTree({ value: root, left: null, right: null });
     setWon(false);
@@ -732,8 +773,16 @@ export default function BSTBoard({
     setLoading(true);
     setLoadError(null);
     try {
-      const { numbers, matchId: id } = await fetchBSTQuestion(round);
-      if (id) setMatchId(id);
+      const { numbers, matchId: id, deadlineAt } = await fetchBSTQuestion(round, roundRequestIdRef.current);
+      if (!id || !deadlineAt) throw new Error("BST round did not include an authoritative deadline.");
+      setMatchId(id);
+      const deadlineMs = Date.parse(deadlineAt);
+      if (!Number.isFinite(deadlineMs)) throw new Error("BST round deadline is invalid.");
+      roundDeadlineRef.current = deadlineMs;
+      roundFinalizedRef.current = false;
+      roundAttemptsRef.current = 0;
+      setRoundRemainingSeconds(60);
+      onRoundTimerChange?.(60);
       setupRound(numbers);
     } catch (err: any) {
       setLoadError(err.message || "Failed to load question from API.");
@@ -750,8 +799,43 @@ export default function BSTBoard({
   // ── Solo Mode: Call GET /api/bst/question ──────────────────────────────────
   useEffect(() => {
     if (mode !== "solo") return;
-    loadQuestionFromAPI();
+    void loadQuestionFromAPI();
   }, [round, mode, loadQuestionFromAPI]);
+
+  useEffect(() => {
+    if (mode !== "solo") return;
+
+    const tick = () => {
+      const deadline = roundDeadlineRef.current;
+      if (!deadline || roundFinalizedRef.current) return;
+
+      const remainingMs = deadline - Date.now();
+      const remainingSeconds = Math.max(0, Math.min(60, Math.ceil(remainingMs / 1000)));
+      setRoundRemainingSeconds(remainingSeconds);
+      onRoundTimerChange?.(remainingSeconds);
+
+      if (remainingMs > 0) return;
+
+      roundFinalizedRef.current = true;
+      void submitScoreAPI(matchId, false, placedRef.current.slice(1), roundAttemptsRef.current)
+        .then((result) => onRoundComplete?.({
+          correctActions: 0,
+          totalActions: 0,
+          completed: false,
+          matchId: matchId ?? undefined,
+          score: result.score,
+          accuracy: result.accuracy,
+          attempts: roundAttemptsRef.current,
+        }))
+        .catch((error) => {
+        console.error("Failed to finalize expired BST round:", error);
+      });
+    };
+
+    tick();
+    const interval = window.setInterval(tick, 250);
+    return () => window.clearInterval(interval);
+  }, [mode, matchId, onRoundComplete, onRoundTimerChange]);
 
   // ── Live Mode: Socket Event Listeners ──────────────────────────────────────
   useEffect(() => {
@@ -768,6 +852,25 @@ export default function BSTBoard({
       setOpponentProgress(null);
       setupRound(seq);
       onRoundChange?.(1);
+    };
+
+    const applyRoundStart = (data: { sequence?: number[]; round?: number }) => {
+      if (!data.sequence || data.sequence.length === 0) return;
+      setMatchFinished(false);
+      setMoveFeedback(null);
+      setupRound(data.sequence);
+      onRoundChange?.(data.round ?? 1);
+    };
+
+    const applyRoundState = (data: { sequence?: number[]; round?: number; startedAt?: number; endsAt?: number; timeoutMs?: number }) => {
+      if (!data.sequence || data.sequence.length === 0) return;
+      setMatchEndsAt(data.endsAt ?? (data.startedAt && data.timeoutMs ? data.startedAt + data.timeoutMs : null));
+      setMatchCountdownMs(data.timeoutMs ?? null);
+      setMatchFinished(false);
+      setMoveFeedback(null);
+      setOpponentProgress(null);
+      setupRound(data.sequence);
+      onRoundChange?.(data.round ?? 1);
     };
 
     const applyProgress = (data: { roomId?: string; gameType?: string; players?: Array<{ socketId?: string; username?: string; correctCount?: number; attempts?: number; accuracy?: number; nextExpectedIndex?: number; finished?: boolean }> }) => {
@@ -788,16 +891,32 @@ export default function BSTBoard({
       if (!data || typeof data.valid === "undefined") return;
 
       if (!data.valid) {
+        if (typeof data.attempts === "number") roundAttemptsRef.current = data.attempts;
         setMoveFeedback(data.detail ?? data.reason ?? "Invalid move.");
         setErrorSlot(null);
         return;
       }
 
-      setMoveFeedback(data.finished ? "You finished the BST!" : `Placed ${data.expectedValue ?? "next value"}.`);
-      setPulseNode(data.expectedValue ?? null);
+      if (typeof data.attempts === "number") roundAttemptsRef.current = data.attempts;
+
+      const value = data.expectedValue;
+      if (typeof value === "number") {
+        setTree((current) => current ? bstInsert(current, value) : current);
+        setPlaced((current) => {
+          const next = current.includes(value) ? current : [...current, value];
+          placedRef.current = next;
+          return next;
+        });
+        setQueue((current) => current.filter((entry) => entry !== value));
+        setScore((data.correctCount ?? 0) * 10);
+      }
+
+      setMoveFeedback(data.finished ? "You finished the BST!" : `Placed ${value ?? "next value"}.`);
+      setPulseNode(value ?? null);
       setTimeout(() => setPulseNode(null), 800);
       if (data.finished) {
-        setMatchFinished(true);
+        setWon(true);
+        setMoveFeedback("Round complete. Waiting for the next round…");
       }
     };
 
@@ -810,12 +929,21 @@ export default function BSTBoard({
     };
 
     socket.on("bst_match_start", applyMatchStart);
+    socket.on("bst_round_start", applyRoundStart);
+    socket.on("bst_round_state", applyRoundState);
     socket.on("bst_progress", applyProgress);
     socket.on("bst_move_result", applyMoveResult);
     socket.on("bst_match_end", applyMatchEnd);
 
+    // The match_start event can fire on the invitation/join route before
+    // this board mounts. Fetch the active round explicitly after listeners
+    // are installed so late-mounted boards still receive a sequence.
+    socket.emit("request_bst_round_state", { roomId });
+
     return () => {
       socket.off("bst_match_start", applyMatchStart);
+      socket.off("bst_round_start", applyRoundStart);
+      socket.off("bst_round_state", applyRoundState);
       socket.off("bst_progress", applyProgress);
       socket.off("bst_move_result", applyMoveResult);
       socket.off("bst_match_end", applyMatchEnd);
@@ -984,6 +1112,13 @@ export default function BSTBoard({
       return;
     }
 
+    const deadline = roundDeadlineRef.current;
+    if (mode === "solo" && deadline && (Date.now() >= deadline || roundFinalizedRef.current)) {
+      setMoveFeedback("This round has expired.");
+      setHoveredSlot(null);
+      return;
+    }
+
     const value = dragValRef.current ?? Number(e.dataTransfer.getData("text/plain"));
     const activeSlot = hoveredSlot;
     if (!activeSlot || isNaN(value)) { setHoveredSlot(null); return; }
@@ -1002,12 +1137,14 @@ export default function BSTBoard({
     }
 
     // Solo mode remains unchanged.
+    roundAttemptsRef.current += 1;
     const isClientValid = isValidPlacementClient(tree, activeSlot.parentValue, activeSlot.side, value);
     const isApiValid = isClientValid && (await validatePlacementAPI(activeSlot.parentValue, activeSlot.side, value));
 
-    if (isApiValid) {
+    if (isApiValid && deadline && Date.now() < deadline && !roundFinalizedRef.current) {
       const newTree = bstInsert(tree, value);
       setTree(newTree);
+      placedRef.current = [...placedRef.current, value];
       setPlaced((p) => [...p, value]);
       const nextQueue = queue.filter((n) => n !== value);
       setQueue(nextQueue);
@@ -1021,13 +1158,23 @@ export default function BSTBoard({
         setWon(true);
         const totalToPlace = numbers.length - 1;
         
-        submitScoreAPI(newScore, round);
-
-        onWin?.(newScore);
-        onRoundComplete?.({
-          correctActions: totalToPlace,
-          totalActions:   totalToPlace,
-        });
+        roundFinalizedRef.current = true;
+        try {
+          const result = await submitScoreAPI(matchId, true, placedRef.current.slice(1), roundAttemptsRef.current);
+          onWin?.(result.score);
+          onRoundComplete?.({
+            correctActions: totalToPlace,
+            totalActions:   totalToPlace,
+            completed: true,
+            matchId: matchId ?? undefined,
+            score: result.score,
+            accuracy: result.accuracy,
+            attempts: roundAttemptsRef.current,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to submit BST score.";
+          setLoadError(message);
+        }
       }
     } else {
       setErrorSlot(activeSlot);
@@ -1104,6 +1251,12 @@ export default function BSTBoard({
           </span>
         </div>
         <div className="flex items-center gap-4">
+          {mode === "solo" && (
+            <div className="flex items-center gap-2" aria-label={`${roundRemainingSeconds} seconds remaining`}>
+              <span className="text-sm text-textMuted">Time:</span>
+              <span className="font-mono text-lg font-bold text-gold">{formatCountdown(roundRemainingSeconds)}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <span className="text-sm text-textMuted">Score:</span>
             <span className="font-mono text-lg font-bold text-gold">{score}</span>

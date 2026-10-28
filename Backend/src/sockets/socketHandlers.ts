@@ -40,6 +40,7 @@ import { recordActivityAndXP } from "../utils/activityTracker";
 const MATCH_SECONDS = 60;
 const DISCONNECT_GRACE_MS = 15000;
 const BST_MATCH_SECONDS = 120;
+const BST_MAX_ROUNDS = 4;
 const GUEST_ROOM_GAMES = new Set(["bst"]);
 
 // Games that have a live (multiplayer) implementation on the server.
@@ -54,9 +55,12 @@ export interface BstPlayerMatchState {
   correctCount: number;
   attempts: number;
   finished: boolean;
+  roundCompleted: boolean;
+  completedRounds: number;
 }
 
 export interface BstMatchState {
+  round: number;
   sequence: number[];
   startedAt: number;
   endsAt: number;
@@ -164,6 +168,8 @@ function buildBstPlayerState(
     correctCount: 1,
     attempts: 0,
     finished: sequence.length <= 1,
+    roundCompleted: false,
+    completedRounds: 0,
   };
 }
 
@@ -171,6 +177,7 @@ function createBstMatchState(room: Room): BstMatchState {
   const sequence = generateBstQuestion(7);
   const now = Date.now();
   return {
+    round: 1,
     sequence,
     startedAt: now,
     endsAt: now + BST_MATCH_SECONDS * 1000,
@@ -212,6 +219,7 @@ function makeBstProgressPayload(room: Room) {
       attempts: player.attempts,
       nextExpectedIndex: player.nextExpectedIndex,
       finished: player.finished,
+      roundsCompleted: player.completedRounds,
       accuracy: computeBstAccuracy(player),
     })),
   };
@@ -260,6 +268,8 @@ function finalizeBstMatch(io: Server, room: Room, reason: "winner" | "timeout" |
     attempts: player.attempts,
     accuracy: computeBstAccuracy(player),
     completed: player.finished,
+    roundsCompleted: player.completedRounds,
+    xp: Math.max(0, player.correctCount - player.completedRounds) * 10,
   }));
 
   io.to(room.roomId).emit("bst_match_end", {
@@ -270,7 +280,69 @@ function finalizeBstMatch(io: Server, room: Room, reason: "winner" | "timeout" |
     results,
   });
 
+  const saveMatchResult = async () => {
+    const loggedIn = match.players.filter((player) => player.userId);
+    if (loggedIn.length === 0) return;
+
+    try {
+      await MatchResult.create({
+        gameType: "bst",
+        roomId: room.roomId,
+        players: loggedIn.map((player) => {
+          const accuracy = computeBstAccuracy(player);
+          const xpEarned = Math.max(0, player.correctCount - player.completedRounds) * 10;
+          return {
+            user_id: player.userId!,
+            username: player.username ?? "Unknown",
+            correctCount: Math.max(0, player.correctCount - player.completedRounds),
+            totalRounds: player.completedRounds,
+            accuracy,
+            xpEarned,
+            result: resolvedWinner === null
+              ? "tie"
+              : resolvedWinner === player.socketId
+                ? "win"
+                : "loss",
+          };
+        }),
+        startedAt: new Date(match.startedAt),
+        endedAt: new Date(),
+      });
+
+      await Promise.all(loggedIn.map((player) =>
+        recordActivityAndXP(player.userId!, player.correctCount * 10)
+      ));
+    } catch (error) {
+      console.error("Failed to save BST match result:", error);
+    }
+  };
+
+  void saveMatchResult();
   removeRoom(room.roomId);
+}
+
+function advanceBstRound(io: Server, room: Room): void {
+  const match = getBstMatch(room);
+  if (!match || match.completed || room.status !== "active") return;
+  if (match.round >= BST_MAX_ROUNDS) return;
+
+  match.round += 1;
+  match.sequence = generateBstQuestion(7);
+  room.currentRoundData = match.sequence;
+  for (const player of match.players) {
+    player.tree = { value: match.sequence[0], left: null, right: null };
+    player.nextExpectedIndex = 1;
+    player.finished = false;
+    player.roundCompleted = false;
+  }
+
+  io.to(room.roomId).emit("bst_round_start", {
+    roomId: room.roomId,
+    gameType: "bst",
+    round: match.round,
+    sequence: match.sequence,
+  });
+  emitBstProgress(io, room);
 }
 
 function startBstMatch(io: Server, room: Room): void {
@@ -280,6 +352,7 @@ function startBstMatch(io: Server, room: Room): void {
 
   const match = createBstMatchState(room);
   room.bstState = match;
+  room.currentRoundData = match.sequence;
   room.status = "active";
 
   const startedAt = match.startedAt;
@@ -292,8 +365,8 @@ function startBstMatch(io: Server, room: Room): void {
   io.to(room.roomId).emit("bst_match_start", {
     roomId: room.roomId,
     gameType: "bst",
-    sequence: match.sequence,
-    startedAt,
+    round: match.round,
+    sequence: match.sequence,    startedAt,
     endsAt: match.endsAt,
     timeoutMs,
   });
@@ -451,8 +524,24 @@ export function applyBstMove(io: Server, room: Room, socketId: string, payload: 
   io.sockets.sockets.get(socketId)?.emit("bst_move_result", response);
   io.to(room.roomId).emit("bst_progress", makeBstProgressPayload(room));
 
-  if (player.finished) {
-    finalizeBstMatch(io, room, "winner", socketId);
+  if (player.finished && !player.roundCompleted) {
+    player.roundCompleted = true;
+    player.completedRounds += 1;
+    emitBstProgress(io, room);
+
+    if (player.completedRounds >= BST_MAX_ROUNDS) {
+      finalizeBstMatch(io, room, "winner", socketId);
+      return { valid: true };
+    }
+
+    if (match.players.every((entry) => entry.roundCompleted)) {
+      advanceBstRound(io, room);
+    } else {
+      io.sockets.sockets.get(socketId)?.emit("bst_round_waiting", {
+        round: match.round,
+        waitingForOpponent: true,
+      });
+    }
   }
 
   return { valid: true };
@@ -705,6 +794,26 @@ export function registerSocketHandlers(io: Server) {
         return;
       }
       applyBstMove(io, room, socket.id, payload);
+    });
+
+    socket.on("request_bst_round_state", (payload?: unknown) => {
+      const room = getRoomBySocket(socket.id);
+      const requestedRoomId = payload && typeof payload === "object" && "roomId" in payload
+        ? String((payload as { roomId?: unknown }).roomId ?? "")
+        : "";
+      if (!room || room.gameType !== "bst" || room.status !== "active" || !room.bstState) return;
+      if (requestedRoomId && requestedRoomId !== room.roomId) return;
+
+      const match = room.bstState;
+      socket.emit("bst_round_state", {
+        roomId: room.roomId,
+        gameType: "bst",
+        round: match.round,
+        sequence: match.sequence,
+        startedAt: match.startedAt,
+        endsAt: match.endsAt,
+        timeoutMs: BST_MATCH_SECONDS * 1000,
+      });
     });
 
     // ── Reliable round-state fetch (handles the race where match_start
