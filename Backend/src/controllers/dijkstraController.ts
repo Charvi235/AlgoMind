@@ -6,7 +6,7 @@ import GameSession from "../models/GameSession";
 import {
   generateGraph,
   dijkstraShortestPath,
-  isValidNextStep,
+  isValidShortestPathStep,
 } from "../utils/graphGenerator";
 import {
   SOLO_SESSION_SECONDS,
@@ -150,7 +150,14 @@ export async function validateDijkstraStep(req: Request, res: Response, next: Ne
     // be completed by jumping straight to the last step.
     let correct =
       currentNode === match.currentNode &&
-      isValidNextStep(match.shortestPath, currentNode, chosenNode);
+      isValidShortestPathStep(
+        match.nodes,
+        match.edges,
+        match.start,
+        match.target,
+        currentNode,
+        chosenNode,
+      );
 
     if (correct) {
       // Guarded write: a duplicate or parallel request can't move twice.

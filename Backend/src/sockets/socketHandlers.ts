@@ -25,7 +25,7 @@ import {
 import {
   generateGraph,
   dijkstraShortestPath,
-  isValidNextStep,
+  isValidShortestPathStep,
 } from "../utils/graphGenerator";
 import User from "../models/User";
 import MatchResult from "../models/MatchResult";
@@ -94,6 +94,9 @@ export function registerSocketHandlers(io: Server) {
     const roundData = generateDijkstraRound(1);
     room.currentRoundData = roundData;
 
+    // Initialise every player's server-tracked position to the round's start.
+    for (const p of room.players) p.currentNode = roundData.start;
+
     io.to(room.roomId).emit("match_start", publicRoundPayload(1, roundData));
 
     room.matchEndTimer = setTimeout(() => { void endMatch(io, room); }, MATCH_SECONDS * 1000);
@@ -103,6 +106,10 @@ export function registerSocketHandlers(io: Server) {
     room.round += 1;
     const roundData = generateDijkstraRound(room.round);
     room.currentRoundData = roundData;
+
+    // Reset every player's server-tracked position to the new round's start.
+    for (const p of room.players) p.currentNode = roundData.start;
+
     io.to(room.roomId).emit("round_data", publicRoundPayload(room.round, roundData));
   }
 
@@ -290,9 +297,35 @@ export function registerSocketHandlers(io: Server) {
         const data = room.currentRoundData as DijkstraRoundData;
         const player = getPlayer(room, socket.id);
         if (!player) return;
+
+        // 1. Count every attempt (correct or wrong) for accuracy.
         player.attempts += 1;
 
-        const correct = isValidNextStep(data.shortestPath, currentNode, chosenNode);
+        // 2. Reset button: client sends currentNode === start, so sync
+        //    the server's position back to start as well.
+        if (currentNode === data.start) {
+          player.currentNode = data.start;
+        }
+
+        // 3. Position check: reject moves from a node the server did not
+        //    place the player at (prevents skipping steps).
+        if (currentNode !== player.currentNode) {
+          socket.emit("step_result", { correct: false, isComplete: false });
+          return;
+        }
+
+        // 4. Validate against all shortest paths (not just the stored one).
+        const correct = isValidShortestPathStep(
+          data.nodes,
+          data.edges,
+          data.start,
+          data.target,
+          currentNode,
+          chosenNode,
+        );
+        if (correct) player.currentNode = chosenNode;
+
+        // 5. Reply, update counters, advance round on completion — unchanged.
         const isComplete = correct && chosenNode === data.target;
 
         socket.emit("step_result", { correct, isComplete });

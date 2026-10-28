@@ -16,6 +16,7 @@ export interface Player {
   correctCount: number;
   totalActions: number;
   attempts: number; // every submit_step, correct or not — used for accuracy
+  currentNode: string; // server-tracked position; "" before the first round starts
 }
 
 export interface Room {
@@ -48,7 +49,7 @@ function generateCode(): string {
 }
 
 function newPlayer(socketId: string, userId?: string, username?: string): Player {
-  return { socketId, userId, username, score: 0, correctCount: 0, totalActions: 0, attempts: 0 };
+  return { socketId, userId, username, score: 0, correctCount: 0, totalActions: 0, attempts: 0, currentNode: "" };
 }
 
 export function createRoom(

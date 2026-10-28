@@ -206,20 +206,70 @@ export function dijkstraShortestPath(
 }
 
 /**
- * Given the player's current node and chosen next node, checks
- * whether the move stays on a valid shortest path from `currentNode`
- * to the target (i.e. chosenNode is the next step on the recomputed
- * shortest path from currentNode onward — handles the case where the
- * player already deviated earlier but this step is still optimal from
- * where they are now... actually for simplicity and correctness we
- * validate against the ORIGINAL shortest path from the match's start).
+ * Returns true when moving from currentNode to chosenNode is a valid step
+ * on SOME shortest path from start to target.
+ *
+ * The check uses the "on-shortest-path" condition:
+ *   dS[currentNode] + weight(currentNode, chosenNode) + dT[chosenNode] === dS[target]
+ *
+ * where dS = shortest distances from start and dT = shortest distances from
+ * target (both computed via Dijkstra). This accepts every optimal move, not
+ * just the single path that was stored at round creation time.
  */
-export function isValidNextStep(
-  shortestPathFromStart: string[],
+export function isValidShortestPathStep(
+  nodes: SimpleNode[],
+  edges: SimpleEdge[],
+  start: string,
+  target: string,
   currentNode: string,
   chosenNode: string
 ): boolean {
-  const idx = shortestPathFromStart.indexOf(currentNode);
-  if (idx === -1 || idx === shortestPathFromStart.length - 1) return false;
-  return shortestPathFromStart[idx + 1] === chosenNode;
+  // Build weighted adjacency (undirected).
+  const adj = new Map<string, { id: string; weight: number }[]>();
+  for (const e of edges) {
+    if (!adj.has(e.source)) adj.set(e.source, []);
+    if (!adj.has(e.target)) adj.set(e.target, []);
+    adj.get(e.source)!.push({ id: e.target, weight: e.weight });
+    adj.get(e.target)!.push({ id: e.source, weight: e.weight });
+  }
+
+  // Verify the edge currentNode→chosenNode actually exists and get its weight.
+  const edge = adj.get(currentNode)?.find((nb) => nb.id === chosenNode);
+  if (!edge) return false;
+
+  // Dijkstra from a single source, returns Map<nodeId, distance>.
+  function shortestDist(src: string): Map<string, number> {
+    const dist = new Map<string, number>();
+    for (const n of nodes) dist.set(n.id, Infinity);
+    dist.set(src, 0);
+    const remaining = new Set(nodes.map((n) => n.id));
+    while (remaining.size) {
+      // Pick unvisited node with smallest tentative distance.
+      let u = "";
+      let minD = Infinity;
+      for (const id of remaining) {
+        const d = dist.get(id)!;
+        if (d < minD) { minD = d; u = id; }
+      }
+      if (!u || minD === Infinity) break;
+      remaining.delete(u);
+      for (const { id: v, weight } of adj.get(u) ?? []) {
+        if (!remaining.has(v)) continue;
+        const alt = dist.get(u)! + weight;
+        if (alt < dist.get(v)!) dist.set(v, alt);
+      }
+    }
+    return dist;
+  }
+
+  const dS = shortestDist(start);
+  const dT = shortestDist(target);
+
+  const totalShortest = dS.get(target);
+  if (totalShortest === undefined || totalShortest === Infinity) return false;
+
+  const dSCurrent = dS.get(currentNode) ?? Infinity;
+  const dTChosen  = dT.get(chosenNode)  ?? Infinity;
+
+  return dSCurrent + edge.weight + dTChosen === totalShortest;
 }
