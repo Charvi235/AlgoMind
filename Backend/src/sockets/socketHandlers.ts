@@ -1,23 +1,15 @@
 /**
  * socketHandlers.ts
  *
- * Registers all Socket.io events. Currently implements live-match
- * logic for Dijkstra; other games will plug into the same
- * roomManager + event shape later (round_data payload differs per
- * game, everything else is shared).
+ * Registers all Socket.io events. Login is REQUIRED to connect: a socket
+ * without a valid JWT is rejected during the handshake. Only Dijkstra has
+ * live-match support for now; other games will plug into the same
+ * roomManager + event shape later (round_data payload differs per game,
+ * everything else is shared).
  */
 
 import type { Server, Socket } from "socket.io";
 import jwt from "jsonwebtoken";
-// Replace line 12:
-
-
-import MatchResult, { IMatchResult } from "../models/MatchResult";
-
-// Replace line 14:
-import { recordActivityAndXP } from "../utils/activityTracker";
-// Update the relative path to where your MatchResult type lives
-// Update relative path to match your file structure
 import {
   createRoom,
   joinRoomByCode,
@@ -33,14 +25,18 @@ import {
 import {
   generateGraph,
   dijkstraShortestPath,
-  isValidNextStep,
+  isValidShortestPathStep,
 } from "../utils/graphGenerator";
-//import User from "../models/User";
-//import MatchResult from "../models/MatchResult";
-//import { recordActivityAndXP } from "../utils/activityTracker";
+import User from "../models/User";
+import MatchResult from "../models/MatchResult";
+import GameSession from "../models/GameSession";
+import { recordActivityAndXP } from "../utils/activityTracker";
 
 const MATCH_SECONDS = 60;
 const DISCONNECT_GRACE_MS = 15000;
+
+// Games that have a live (multiplayer) implementation on the server.
+const LIVE_GAMES = new Set(["dijkstra"]);
 
 interface DijkstraRoundData {
   nodes: ReturnType<typeof generateGraph>["nodes"];
@@ -61,28 +57,45 @@ function publicRoundPayload(round: number, data: DijkstraRoundData) {
   return { round, nodes: data.nodes, edges: data.edges, start: data.start, target: data.target };
 }
 
+// A failed lookup must never crash the server (an unhandled rejection
+// inside a socket handler would), so errors just mean "no username".
+async function lookupUsername(userId: string | undefined): Promise<string | undefined> {
+  if (!userId) return undefined;
+  try {
+    return (await User.findById(userId))?.username;
+  } catch {
+    return undefined;
+  }
+}
+
 export function registerSocketHandlers(io: Server) {
-  // ── Authenticate the socket connection (optional — guests allowed) ──
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) throw new Error("JWT_SECRET is not set");
+
+  // ── Login required: reject the connection without a valid token ──────
   io.use((socket, next) => {
-    const token = socket.handshake.auth?.token as string | undefined;
-    if (token) {
-      try {
-        const secret = process.env.JWT_SECRET!;
-        const payload = jwt.verify(token, secret) as { userId: string };
-        socket.data.userId = payload.userId;
-      } catch {
-        // Invalid/expired token — proceed as guest rather than blocking
-        // the connection; guests just won't have results saved.
-      }
+    const token = socket.handshake.auth?.token;
+    if (typeof token !== "string" || token.length === 0) {
+      return next(new Error("AUTH_REQUIRED"));
     }
-    next();
+    try {
+      const payload = jwt.verify(token, jwtSecret) as { userId?: string };
+      if (!payload.userId) return next(new Error("AUTH_REQUIRED"));
+      socket.data.userId = payload.userId;
+      next();
+    } catch {
+      next(new Error("AUTH_REQUIRED"));
+    }
   });
 
   function startMatch(io: Server, room: Room) {
     room.status = "active";
     room.round = 1;
-    const roundData = generateDijkstraRound(1); // TODO: branch by room.gameType when other games get live support
+    const roundData = generateDijkstraRound(1);
     room.currentRoundData = roundData;
+
+    // Initialise every player's server-tracked position to the round's start.
+    for (const p of room.players) p.currentNode = roundData.start;
 
     io.to(room.roomId).emit("match_start", publicRoundPayload(1, roundData));
 
@@ -93,11 +106,15 @@ export function registerSocketHandlers(io: Server) {
     room.round += 1;
     const roundData = generateDijkstraRound(room.round);
     room.currentRoundData = roundData;
+
+    // Reset every player's server-tracked position to the new round's start.
+    for (const p of room.players) p.currentNode = roundData.start;
+
     io.to(room.roomId).emit("round_data", publicRoundPayload(room.round, roundData));
   }
 
-    async function endMatch(io: Server, room: Room) {
-    // Single source of truth for final stats: used for winner decision,
+  async function endMatch(io: Server, room: Room) {
+    // Single source of truth for final stats: used for the winner decision,
     // the match_end payload AND the DB save.
     // Accuracy = correct steps / all attempts (wrong clicks count).
     const stats = room.players.map((p) => ({
@@ -136,7 +153,6 @@ export function registerSocketHandlers(io: Server) {
     // timer can't trigger a second endMatch and double-save.
     removeRoom(room.roomId);
 
-
     const resultFor = (socketId: string): "win" | "loss" | "tie" =>
       !winnerSocketId ? "tie" : socketId === winnerSocketId ? "win" : "loss";
 
@@ -159,76 +175,90 @@ export function registerSocketHandlers(io: Server) {
           endedAt: new Date(),
         });
 
-        for (const s of loggedIn) {
+               for (const s of loggedIn) {
           await recordActivityAndXP(s.userId!, s.xp);
         }
+
+        await GameSession.create(
+          loggedIn.map((s) => ({
+            userId: s.userId,
+            gameType: room.gameType,
+            mode: "live" as const,
+            status: "completed" as const,
+            roundsCompleted: s.roundsCompleted,
+            accuracy: s.accuracy,
+            xpEarned: s.xp,
+            roomId: room.roomId,
+            startedAt: new Date(Date.now() - MATCH_SECONDS * 1000),
+            completedAt: new Date(),
+            durationSeconds: MATCH_SECONDS,
+          }))
+        );
       } catch (err) {
         console.error("Failed to save match result:", err);
       }
-
-      // try {
-      //   await MatchResult.create({
-      //     gameType: room.gameType,
-      //     roomId: room.roomId,
-      //     players: matchPlayers,
-      //     startedAt: new Date(Date.now() - MATCH_SECONDS * 1000),
-      //     endedAt: new Date(),
-      //   });
-
-      //   // for (const mp of matchPlayers) {
-      //   //   await recordActivityAndXP(mp.user_id as unknown as string, mp.xpEarned);
-      //   // }
-      // } catch (err) {
-      //   console.error("Failed to save match result:", err);
-      // }
-
     }
   }
 
   io.on("connection", (socket: Socket) => {
-    const userId = socket.data.userId as string | undefined;
+    const userId = socket.data.userId as string;
 
     // ── Random matchmaking ──────────────────────────────────────
-    // socket.on("join_queue", async ({ gameType }: { gameType: string }) => {
-    //   const username = userId ? (await User.findById(userId))?.username : undefined;
+    socket.on("join_queue", async (payload?: { gameType?: unknown }) => {
+      const gameType = typeof payload?.gameType === "string" ? payload.gameType : "";
+      if (!LIVE_GAMES.has(gameType)) {
+        socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
+        return;
+      }
+      const username = await lookupUsername(userId);
 
-    //   const room = joinRandomQueue(gameType, socket.id, userId, username);
-    //   if (room) {
-    //     for (const p of room.players) io.sockets.sockets.get(p.socketId)?.join(room.roomId);
-    //     io.to(room.roomId).emit("matched", { roomId: room.roomId });
-    //     startMatch(io, room);
-    //   } else {
-    //     socket.emit("queue_joined");
-    //   }
-    // });
+      const room = joinRandomQueue(gameType, socket.id, userId, username);
+      if (room) {
+        for (const p of room.players) io.sockets.sockets.get(p.socketId)?.join(room.roomId);
+        io.to(room.roomId).emit("matched", { roomId: room.roomId });
+        startMatch(io, room);
+      } else {
+        socket.emit("queue_joined");
+      }
+    });
 
-    // socket.on("cancel_queue", ({ gameType }: { gameType: string }) => {
-    //   leaveQueue(gameType, socket.id);
-    // });
+    socket.on("cancel_queue", (payload?: { gameType?: unknown }) => {
+      if (typeof payload?.gameType === "string") leaveQueue(payload.gameType, socket.id);
+    });
 
     // ── Invite code flow ────────────────────────────────────────
- //   socket.on("create_room", async ({ gameType }: { gameType: string }) => {
-    //   const username = userId ? (await User.findById(userId))?.username : undefined;
+    socket.on("create_room", async (payload?: { gameType?: unknown }) => {
+      const gameType = typeof payload?.gameType === "string" ? payload.gameType : "";
+      if (!LIVE_GAMES.has(gameType)) {
+        socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
+        return;
+      }
+      const username = await lookupUsername(userId);
 
-    //   const room = createRoom(gameType, socket.id, userId, username);
-    //   socket.join(room.roomId);
-    //   socket.emit("room_created", { roomId: room.roomId, code: room.code });
-    // });
+      const room = createRoom(gameType, socket.id, userId, username);
+      socket.join(room.roomId);
+      socket.emit("room_created", { roomId: room.roomId, code: room.code });
+    });
 
-   // socket.on("join_room", async ({ code }: { code: string }) => {
-    //  const username = userId ? (await User.findById(userId))?.username : undefined;
+    socket.on("join_room", async (payload?: { code?: unknown }) => {
+      const code = typeof payload?.code === "string" ? payload.code.trim() : "";
+      if (!/^[A-Za-z0-9]{6}$/.test(code)) {
+        socket.emit("join_room_error", { message: "Room not found or already full." });
+        return;
+      }
+      const username = await lookupUsername(userId);
 
-     // const room = joinRoomByCode(code, socket.id, userId, username);
-     // if (!room) {
-       // socket.emit("join_room_error", { message: "Room not found or already full." });
-        //return;
-      //}
-      //socket.join(room.roomId);
-      //io.to(room.roomId).emit("matched", { roomId: room.roomId });
-      //startMatch(io, room);
-    //});
+      const room = joinRoomByCode(code, socket.id, userId, username);
+      if (!room) {
+        socket.emit("join_room_error", { message: "Room not found or already full." });
+        return;
+      }
+      socket.join(room.roomId);
+      io.to(room.roomId).emit("matched", { roomId: room.roomId });
+      startMatch(io, room);
+    });
 
-        // Host leaves the invite screen before anyone joined: drop the empty
+    // Host leaves the invite screen before anyone joined: drop the empty
     // room so its code can't be used to "join" a host who already left.
     socket.on("cancel_room", () => {
       const room = getRoomBySocket(socket.id);
@@ -237,8 +267,9 @@ export function registerSocketHandlers(io: Server) {
         removeRoom(room.roomId);
       }
     });
-    // ── Reliable round-state fetch (handles race where match_start
-    // fires before the client's Board component has mounted) ───────
+
+    // ── Reliable round-state fetch (handles the race where match_start
+    // fires before the client's Board component has mounted) ──────────
     socket.on("request_round_state", () => {
       const room = getRoomBySocket(socket.id);
       if (!room || !room.currentRoundData) return;
@@ -255,16 +286,46 @@ export function registerSocketHandlers(io: Server) {
     // ── Gameplay ─────────────────────────────────────────────────
     socket.on(
       "submit_step",
-      ({ currentNode, chosenNode }: { currentNode: string; chosenNode: string }) => {
+      (payload?: { currentNode?: unknown; chosenNode?: unknown }) => {
+        const currentNode = payload?.currentNode;
+        const chosenNode = payload?.chosenNode;
+        if (typeof currentNode !== "string" || typeof chosenNode !== "string") return;
+
         const room = getRoomBySocket(socket.id);
         if (!room || room.status !== "active" || !room.currentRoundData) return;
 
         const data = room.currentRoundData as DijkstraRoundData;
         const player = getPlayer(room, socket.id);
         if (!player) return;
+
+        // 1. Count every attempt (correct or wrong) for accuracy.
         player.attempts += 1;
 
-        const correct = isValidNextStep(data.shortestPath, currentNode, chosenNode);
+        // 2. Reset button: client sends currentNode === start, so sync
+        //    the server's position back to start as well.
+        if (currentNode === data.start) {
+          player.currentNode = data.start;
+        }
+
+        // 3. Position check: reject moves from a node the server did not
+        //    place the player at (prevents skipping steps).
+        if (currentNode !== player.currentNode) {
+          socket.emit("step_result", { correct: false, isComplete: false });
+          return;
+        }
+
+        // 4. Validate against all shortest paths (not just the stored one).
+        const correct = isValidShortestPathStep(
+          data.nodes,
+          data.edges,
+          data.start,
+          data.target,
+          currentNode,
+          chosenNode,
+        );
+        if (correct) player.currentNode = chosenNode;
+
+        // 5. Reply, update counters, advance round on completion — unchanged.
         const isComplete = correct && chosenNode === data.target;
 
         socket.emit("step_result", { correct, isComplete });

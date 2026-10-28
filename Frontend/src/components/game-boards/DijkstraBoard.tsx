@@ -16,7 +16,7 @@ import Card from "../ui/Card";
 import Button from "../ui/Button";
 import { socket } from "../../lib/socket";
 import type { SimpleNode, SimpleEdge } from "../../utils/graphGenerator";
-
+import { getToken, clearToken } from "../../lib/auth";
 
 // ─── Theme constants ───────────────────────────────────────────────
 const C = {
@@ -44,8 +44,24 @@ interface ServerGraph {
   target: string;
 }
 
-async function fetchNewGraph(round: number): Promise<ServerGraph> {
-  const res = await fetch(`${API_BASE}/api/games/dijkstra/new?round=${round}`);
+// Sends the login token with every request. A 401 means the token is
+// missing or expired, so clear it and go back to the login page.
+async function authFetch(url: string, init: { method?: string; body?: string } = {}): Promise<Response> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(url, { ...init, headers });
+  if (res.status === 401) {
+    clearToken();
+    window.location.assign("/login");
+  }
+  return res;
+}
+
+async function fetchNewGraph(round: number, sessionId?: string): Promise<ServerGraph> {
+  const qs = new URLSearchParams({ round: String(round) });
+  if (sessionId) qs.set("sessionId", sessionId);
+  const res = await authFetch(`${API_BASE}/api/games/dijkstra/new?${qs.toString()}`);
   if (!res.ok) throw new Error("Failed to fetch graph");
   return res.json();
 }
@@ -55,9 +71,8 @@ async function validateStep(
   currentNode: string,
   chosenNode: string
 ): Promise<{ correct: boolean; isComplete: boolean }> {
-  const res = await fetch(`${API_BASE}/api/games/dijkstra/validate-step`, {
+  const res = await authFetch(`${API_BASE}/api/games/dijkstra/validate-step`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ graphId, currentNode, chosenNode }),
   });
   if (!res.ok) throw new Error("Failed to validate step");
@@ -168,12 +183,16 @@ export interface DijkstraBoardProps {
   /** "solo" (default) fetches via REST. "live" uses Socket.io, server-pushed rounds. */
   mode?: "solo" | "live";
   /** Live mode only — lets the shell display the server-authoritative round number. */
+    /** Live mode only — lets the shell display the server-authoritative round number. */
   onRoundChange?: (round: number) => void;
+  /** Solo mode: the server-issued session this board plays inside. */
+  sessionId?: string;
+
 }
 
 // ─── Component ─────────────────────────────────────────────────────
 export default function DijkstraBoard({
-  onWin, onReset, onRoundComplete, round = 1, mode = "solo", onRoundChange,
+    onWin, onReset, onRoundComplete, round = 1, mode = "solo", onRoundChange, sessionId,
 }: DijkstraBoardProps) {
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -187,12 +206,12 @@ export default function DijkstraBoard({
   const [flashEdge,  setFlashEdge]  = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
 
-  // ── Solo mode: fetch a fresh graph via REST ─────────────────────
+   // ── Solo mode: fetch a fresh graph via REST ─────────────────────
   useEffect(() => {
     if (mode !== "solo") return;
     let cancelled = false;
     setLoadError(null);
-    fetchNewGraph(round)
+    fetchNewGraph(round, sessionId)
       .then((g) => {
         if (cancelled) return;
         setGraph(g);
@@ -203,7 +222,7 @@ export default function DijkstraBoard({
         if (!cancelled) setLoadError("Couldn't load the graph. Check your connection and try again.");
       });
     return () => { cancelled = true; };
-  }, [round, mode]);
+  }, [round, mode, sessionId]);
 
   // ── Live mode: receive rounds pushed by the server over Socket.io ─
   useEffect(() => {
@@ -282,10 +301,9 @@ export default function DijkstraBoard({
       if (isComplete) {
         if (mode === "solo") setRunning(false);
         onWin?.(seconds + 1);
-        onRoundComplete?.({
-          correctActions: newPath.length - 1,
-          totalActions:   mode === "solo" ? optimalPath.length - 1 : newPath.length - 1,
-        });
+               // One finished round = one scored unit, so the on-screen score is
+        // rounds x 10 and matches the XP the server awards.
+        onRoundComplete?.({ correctActions: 1, totalActions: 1 });
       }
     };
 

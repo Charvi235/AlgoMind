@@ -1,44 +1,30 @@
+import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Trophy, Medal, Award, TrendingUp, Flame } from "lucide-react";
+import { Trophy, Medal, Award, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import Card from "../components/ui/Card";
+import { apiAuthGet, ApiError } from "../lib/api";
 
-// ─── Mock data ────────────────────────────────────────────────────────────────
-// TODO: replace with GET /api/leaderboard?limit=20
-// Response shape: { rank: number, name: string, score: number, streak: number, accuracy: number }[]
+// ─── API response types ───────────────────────────────────────────────────────
 
-interface LeaderboardUser {
+interface LeaderboardEntry {
   rank:     number;
-  name:     string;
-  score:    number;
-  streak:   number;
-  accuracy: number;
-  isCurrentUser?: boolean;
+  username: string;
+  totalXP:  number;
+  isMe:     boolean;
 }
 
-const MOCK_USERS: LeaderboardUser[] = [
-  { rank:  1, name: "Sarah K.",    score: 4820, streak: 14, accuracy: 97 },
-  { rank:  2, name: "Marcus T.",   score: 4610, streak: 10, accuracy: 94 },
-  { rank:  3, name: "Priya M.",    score: 4405, streak:  8, accuracy: 92 },
-  { rank:  4, name: "Lena W.",     score: 4200, streak:  6, accuracy: 91 },
-  { rank:  5, name: "Kai R.",      score: 4050, streak:  5, accuracy: 89 },
-  { rank:  6, name: "Omar S.",     score: 3980, streak:  7, accuracy: 88 },
-  { rank:  7, name: "Yuki N.",     score: 3810, streak:  4, accuracy: 87 },
-  { rank:  8, name: "Fatima A.",   score: 3760, streak:  3, accuracy: 86 },
-  { rank:  9, name: "Devlin C.",   score: 3680, streak:  9, accuracy: 85 },
-  { rank: 10, name: "Hana B.",     score: 3550, streak:  2, accuracy: 84 },
-  { rank: 11, name: "Tariq J.",    score: 3440, streak:  1, accuracy: 83 },
-  { rank: 12, name: "Elena P.",    score: 3300, streak:  5, accuracy: 82 },
-  { rank: 13, name: "Rohan D.",    score: 3210, streak:  3, accuracy: 81 },
-  { rank: 14, name: "Alex",        score: 3100, streak:  7, accuracy: 92, isCurrentUser: true },
-  { rank: 15, name: "Mei L.",      score: 2990, streak:  2, accuracy: 79 },
-];
+interface LeaderboardData {
+  entries: LeaderboardEntry[];
+  me:      { rank: number | null; username: string; totalXP: number } | null;
+}
 
 // ─── Rank badge ───────────────────────────────────────────────────────────────
+
 function RankBadge({ rank }: { rank: number }) {
-  if (rank === 1) return <Trophy   size={16} className="text-gold"     aria-label="1st place" />;
-  if (rank === 2) return <Medal    size={16} className="text-star"     aria-label="2nd place" />;
-  if (rank === 3) return <Award    size={16} className="text-textMuted" aria-label="3rd place" />;
+  if (rank === 1) return <Trophy size={16} className="text-gold"      aria-label="1st place" />;
+  if (rank === 2) return <Medal  size={16} className="text-star"      aria-label="2nd place" />;
+  if (rank === 3) return <Award  size={16} className="text-textMuted" aria-label="3rd place" />;
   return (
     <span className="font-mono text-xs font-bold text-textMuted w-4 text-center">
       {rank}
@@ -46,17 +32,116 @@ function RankBadge({ rank }: { rank: number }) {
   );
 }
 
+// ─── Loading skeleton ─────────────────────────────────────────────────────────
+
+function Skeleton({ className = "" }: { className?: string }) {
+  return (
+    <span
+      className={`inline-block rounded bg-panelBorder/40 animate-pulse ${className}`}
+      aria-hidden="true"
+    />
+  );
+}
+
 // ─── Animation variants ───────────────────────────────────────────────────────
+
 const fadeUp = { hidden: { opacity: 0, y: 16 }, visible: { opacity: 1, y: 0 } };
 const stagger = {
   hidden:  {},
   visible: { transition: { staggerChildren: 0.04, delayChildren: 0.1 } },
 };
 
+// ─── Row component ────────────────────────────────────────────────────────────
+
+function LeaderboardRow({
+  entry,
+  separator = true,
+}: {
+  entry:      LeaderboardEntry;
+  separator?: boolean;
+}) {
+  return (
+    <motion.li
+      variants={fadeUp}
+      className={[
+        "grid grid-cols-[2.5rem_1fr_auto] gap-x-4 items-center px-5 py-3 transition-colors duration-150",
+        separator ? "border-b border-panelBorder/50 last:border-0" : "",
+        entry.isMe
+          ? "bg-node/5 border-l-2 border-l-node"
+          : "hover:bg-panelBorder/20",
+      ].join(" ")}
+      aria-label={`${entry.isMe ? "You: " : ""}Rank ${entry.rank}: ${entry.username}, ${entry.totalXP.toLocaleString()} XP`}
+    >
+      {/* Rank */}
+      <div className="flex justify-center">
+        <RankBadge rank={entry.rank} />
+      </div>
+
+      {/* Player */}
+      <div className="flex items-center gap-3 min-w-0">
+        <div
+          className="h-8 w-8 rounded-full border flex items-center justify-center font-bold text-xs shrink-0"
+          style={{
+            borderColor: entry.isMe ? "#7FA8FF" : "#2A3166",
+            color:       entry.isMe ? "#7FA8FF" : "#9199B5",
+            background:  "#060709",
+          }}
+          aria-hidden="true"
+        >
+          {entry.username[0]?.toUpperCase()}
+        </div>
+        <span
+          className={`font-sans text-sm truncate ${
+            entry.isMe ? "font-bold text-node" : "text-textPrimary"
+          }`}
+        >
+          {entry.username}{entry.isMe ? " (you)" : ""}
+        </span>
+      </div>
+
+      {/* XP */}
+      <span className="font-mono text-sm font-bold text-gold text-right tabular-nums">
+        {entry.totalXP.toLocaleString()}
+      </span>
+    </motion.li>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
+
 export default function Leaderboard() {
-  const top3 = MOCK_USERS.slice(0, 3);
-  const rest = MOCK_USERS.slice(3);
+  const [data,    setData]    = useState<LeaderboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await apiAuthGet<LeaderboardData>("/api/leaderboard?limit=50");
+      setData(result);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return; // redirect triggered
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Couldn't load the leaderboard. Check your connection.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  // Whether the current user appears anywhere in the entries list.
+  const meInList = data?.entries.some((e) => e.isMe) ?? false;
+
+  // Separate "me" row shown at the bottom only when me is outside the top-50.
+  const meOutsideList: LeaderboardEntry | null =
+    data?.me && !meInList && data.me.rank !== null
+      ? { rank: data.me.rank, username: data.me.username, totalXP: data.me.totalXP, isMe: true }
+      : null;
 
   return (
     <motion.div
@@ -73,140 +158,168 @@ export default function Leaderboard() {
         </p>
       </motion.div>
 
+      {/* ── Error ───────────────────────────────────────────────────────── */}
+      {error && (
+        <motion.div
+          variants={fadeUp}
+          role="alert"
+          className="flex items-center gap-4 rounded-xl border border-error/40 bg-error/10 px-5 py-3"
+        >
+          <p className="flex-1 text-sm text-error">{error}</p>
+          <button
+            onClick={() => void load()}
+            className="flex items-center gap-1.5 text-xs font-medium text-error hover:brightness-125 transition-all focus-visible:outline-none focus-visible:underline"
+            aria-label="Retry loading leaderboard"
+          >
+            <RefreshCw size={13} aria-hidden="true" />
+            Retry
+          </button>
+        </motion.div>
+      )}
+
       {/* ── Top 3 podium ────────────────────────────────────────────────── */}
-      <motion.div
-        variants={fadeUp}
-        className="grid grid-cols-1 gap-4 sm:grid-cols-3"
-        aria-label="Top 3 players"
-      >
-        {top3.map((user) => {
-              const isGold   = user.rank === 1;
-              const isSilver = user.rank === 2;
-              return (
-                <Card
-                  key={user.rank}
-                  className={`flex flex-col gap-3 ${isGold ? "!border-gold/60" : isSilver ? "!border-star/40" : ""}`}
-                  style={isGold
-                    ? { boxShadow: "0 0 0 1px rgba(255,211,110,0.2), 0 0 20px 4px rgba(255,211,110,0.08)" }
-                    : undefined
-                  }
-                >
-                  <div className="flex items-center justify-between">
-                    <RankBadge rank={user.rank} />
-                    <span className="font-mono text-xs text-textMuted">
-                      <Flame size={11} className="inline mr-1 text-gold" aria-hidden="true" />
-                      {user.streak}d
-                    </span>
-                  </div>
+      {(loading || (data?.entries && data.entries.length > 0)) && (
+        <motion.div
+          variants={fadeUp}
+          className="grid grid-cols-1 gap-4 sm:grid-cols-3"
+          aria-label="Top 3 players"
+        >
+          {loading
+            ? [1, 2, 3].map((i) => (
+                <Card key={i} className="flex flex-col gap-3">
+                  <Skeleton className="w-8 h-4" />
                   <div className="flex items-center gap-3">
-                    <div
-                      className="h-10 w-10 rounded-full border-2 flex items-center justify-center font-bold text-sm shrink-0"
-                      style={{
-                        borderColor: isGold ? "#FFD36E" : isSilver ? "#8A93B8" : "#9199B5",
-                        color:       isGold ? "#FFD36E" : isSilver ? "#8A93B8" : "#9199B5",
-                        background:  "#060709",
-                      }}
-                      aria-label={`${user.name}'s avatar`}
-                    >
-                      {user.name[0]}
-                    </div>
-                    <div>
-                      <p className="font-sans text-sm font-semibold text-textPrimary">{user.name}</p>
-                      <p className="font-mono text-xs text-textMuted">{user.accuracy}% accuracy</p>
+                    <Skeleton className="w-10 h-10 rounded-full" />
+                    <div className="flex flex-col gap-1.5">
+                      <Skeleton className="w-24 h-4" />
+                      <Skeleton className="w-16 h-3" />
                     </div>
                   </div>
-                  <p className="font-mono text-2xl font-bold text-gold">
-                    {user.score.toLocaleString()}
-                    <span className="text-xs text-textMuted font-normal ml-1">pts</span>
-                  </p>
+                  <Skeleton className="w-20 h-8" />
                 </Card>
-              );
-            })}
-      </motion.div>
+              ))
+            : data!.entries.slice(0, 3).map((entry) => {
+                const isGold   = entry.rank === 1;
+                const isSilver = entry.rank === 2;
+                return (
+                  <Card
+                    key={entry.rank}
+                    className={`flex flex-col gap-3 ${isGold ? "!border-gold/60" : isSilver ? "!border-star/40" : ""}`}
+                    style={
+                      isGold
+                        ? { boxShadow: "0 0 0 1px rgba(255,211,110,0.2), 0 0 20px 4px rgba(255,211,110,0.08)" }
+                        : undefined
+                    }
+                  >
+                    <div className="flex items-center justify-between">
+                      <RankBadge rank={entry.rank} />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="h-10 w-10 rounded-full border-2 flex items-center justify-center font-bold text-sm shrink-0"
+                        style={{
+                          borderColor: isGold ? "#FFD36E" : isSilver ? "#8A93B8" : "#9199B5",
+                          color:       isGold ? "#FFD36E" : isSilver ? "#8A93B8" : "#9199B5",
+                          background:  "#060709",
+                        }}
+                        aria-label={`${entry.username}'s avatar`}
+                      >
+                        {entry.username[0]?.toUpperCase()}
+                      </div>
+                      <div>
+                        <p className={`font-sans text-sm font-semibold ${entry.isMe ? "text-node" : "text-textPrimary"}`}>
+                          {entry.username}{entry.isMe ? " (you)" : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <p className="font-mono text-2xl font-bold text-gold">
+                      {entry.totalXP.toLocaleString()}
+                      <span className="text-xs text-textMuted font-normal ml-1">XP</span>
+                    </p>
+                  </Card>
+                );
+              })
+          }
+        </motion.div>
+      )}
 
       {/* ── Full table ──────────────────────────────────────────────────── */}
       <motion.div variants={fadeUp}>
         <Card className="!p-0 overflow-hidden">
           {/* Table header */}
-          <div className="grid grid-cols-[2.5rem_1fr_auto_auto_auto] gap-x-4 items-center px-5 py-3 border-b border-panelBorder">
+          <div className="grid grid-cols-[2.5rem_1fr_auto] gap-x-4 items-center px-5 py-3 border-b border-panelBorder">
             <span className="text-xs uppercase tracking-widest text-textMuted">#</span>
             <span className="text-xs uppercase tracking-widest text-textMuted">Player</span>
-            <span className="text-xs uppercase tracking-widest text-textMuted hidden sm:block">Streak</span>
-            <span className="text-xs uppercase tracking-widest text-textMuted hidden sm:block">Accuracy</span>
-            <span className="text-xs uppercase tracking-widest text-textMuted text-right">Score</span>
+            <span className="text-xs uppercase tracking-widest text-textMuted text-right">XP</span>
           </div>
 
-          {/* Rows */}
-          <motion.ul
-            role="list"
-            aria-label="Full leaderboard"
-            variants={stagger}
-            initial="hidden"
-            animate="visible"
-          >
-            {rest.map((user) => (
-                  <motion.li
-                    key={user.rank}
-                    variants={fadeUp}
-                    className={[
-                      "grid grid-cols-[2.5rem_1fr_auto_auto_auto] gap-x-4 items-center px-5 py-3 border-b border-panelBorder/50 last:border-0 transition-colors duration-150",
-                      user.isCurrentUser
-                        ? "bg-node/5 border-l-2 border-l-node"
-                        : "hover:bg-panelBorder/20",
-                    ].join(" ")}
-                    aria-label={`${user.isCurrentUser ? "You: " : ""}Rank ${user.rank}: ${user.name}, ${user.score} points`}
-                  >
-                    {/* Rank */}
-                    <div className="flex justify-center">
-                      <RankBadge rank={user.rank} />
-                    </div>
+          {/* Loading skeleton rows */}
+          {loading && (
+            <ul aria-busy="true" aria-label="Loading leaderboard">
+              {Array.from({ length: 8 }, (_, i) => (
+                <li
+                  key={i}
+                  className="grid grid-cols-[2.5rem_1fr_auto] gap-x-4 items-center px-5 py-3 border-b border-panelBorder/50 last:border-0"
+                >
+                  <Skeleton className="w-4 h-4 mx-auto" />
+                  <div className="flex items-center gap-3">
+                    <Skeleton className="w-8 h-8 rounded-full" />
+                    <Skeleton className="w-28 h-4" />
+                  </div>
+                  <Skeleton className="w-14 h-4 ml-auto" />
+                </li>
+              ))}
+            </ul>
+          )}
 
-                    {/* Player */}
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div
-                        className="h-8 w-8 rounded-full border flex items-center justify-center font-bold text-xs shrink-0"
-                        style={{
-                          borderColor: user.isCurrentUser ? "#7FA8FF" : "#2A3166",
-                          color:       user.isCurrentUser ? "#7FA8FF" : "#9199B5",
-                          background:  "#060709",
-                        }}
-                        aria-hidden="true"
-                      >
-                        {user.name[0]}
-                      </div>
-                      <span className={`font-sans text-sm truncate ${
-                        user.isCurrentUser ? "font-bold text-node" : "text-textPrimary"
-                      }`}>
-                        {user.name}{user.isCurrentUser && " (you)"}
-                      </span>
-                    </div>
+          {/* Empty state */}
+          {!loading && !error && data?.entries.length === 0 && (
+            <p className="px-5 py-8 text-sm text-center text-textMuted">
+              No scores yet. Be the first!
+            </p>
+          )}
 
-                    {/* Streak */}
-                    <div className="hidden sm:flex items-center gap-1 text-xs text-textMuted font-mono">
-                      <Flame size={11} className="text-gold shrink-0" aria-hidden="true" />
-                      {user.streak}d
-                    </div>
+          {/* Populated rows */}
+          {!loading && data && data.entries.length > 0 && (
+            <motion.ul
+              role="list"
+              aria-label="Full leaderboard"
+              variants={stagger}
+              initial="hidden"
+              animate="visible"
+            >
+              {data.entries.map((entry) => (
+                <LeaderboardRow key={`${entry.rank}-${entry.username}`} entry={entry} />
+              ))}
+            </motion.ul>
+          )}
 
-                    {/* Accuracy */}
-                    <div className="hidden sm:flex items-center gap-1 text-xs font-mono">
-                      <TrendingUp size={11} className="text-teal shrink-0" aria-hidden="true" />
-                      <span className="text-teal">{user.accuracy}%</span>
-                    </div>
-
-                    {/* Score */}
-                    <span className="font-mono text-sm font-bold text-gold text-right tabular-nums">
-                      {user.score.toLocaleString()}
-                    </span>
-                  </motion.li>
-                ))}
-          </motion.ul>
+          {/* "Your rank" row — only when me is outside the visible list */}
+          {!loading && meOutsideList && (
+            <>
+              <div className="px-5 py-2 border-t border-panelBorder/50">
+                <span className="text-xs text-textMuted uppercase tracking-widest">
+                  Your rank
+                </span>
+              </div>
+              <motion.ul
+                role="list"
+                aria-label="Your rank"
+                variants={stagger}
+                initial="hidden"
+                animate="visible"
+              >
+                <LeaderboardRow entry={meOutsideList} separator={false} />
+              </motion.ul>
+            </>
+          )}
         </Card>
       </motion.div>
 
       {/* ── Back link ───────────────────────────────────────────────────── */}
       <motion.div variants={fadeUp}>
         <Link
-          to="/"
+          to="/dashboard"
           className="text-sm text-textMuted hover:text-textPrimary transition-colors focus-visible:outline-none focus-visible:underline"
         >
           ← Back to Dashboard
