@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { randomBytes } from "crypto";
 import User from "../models/User";
 import PendingSignup from "../models/PendingSignup";
+import PasswordReset from "../models/PasswordReset";
 import {
   generateOtp,
   hashOtp,
@@ -84,7 +85,7 @@ export async function signupStart(req: Request, res: Response, next: NextFunctio
         },
         $unset: { signupTokenHash: 1 },
       },
-      { upsert: true }
+      { upsert: true, returnDocument: "after" }
     );
 
     try {
@@ -117,7 +118,7 @@ export async function signupVerify(req: Request, res: Response, next: NextFuncti
     const pending = await PendingSignup.findOneAndUpdate(
       { email, verified: false, attempts: { $lt: OTP_MAX_ATTEMPTS }, expiresAt: { $gt: new Date() } },
       { $inc: { attempts: 1 } },
-      { new: true }
+      { returnDocument: "after" }
     );
 
     if (!pending) {
@@ -296,6 +297,162 @@ export async function getMe(req: Request, res: Response, next: NextFunction) {
       current_streak: user.current_streak,
       longest_streak: user.longest_streak,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Password reset: step 1 — send code ─────────────────────────────────
+// Always responds 200 so the endpoint cannot be used to discover accounts.
+export async function passwordForgot(req: Request, res: Response, next: NextFunction) {
+  try {
+    const email = normalizeEmail(str(body(req).email));
+    const emailErr = validateEmail(email);
+    if (emailErr) { res.status(400).json({ error: emailErr }); return; }
+
+    const ALWAYS_OK = { ok: true, resendAfterSeconds: OTP_RESEND_COOLDOWN_MS / 1000 };
+
+    const user = await User.exists({ email });
+    if (!user) {
+      res.json(ALWAYS_OK);
+      return;
+    }
+
+    // Respect the resend cooldown so the same code isn't spammed.
+    const existing = await PasswordReset.findOne({ email });
+    if (existing) {
+      const wait = OTP_RESEND_COOLDOWN_MS - (Date.now() - existing.lastSentAt.getTime());
+      if (wait > 0) {
+        res.json(ALWAYS_OK);
+        return;
+      }
+    }
+
+    const otp = generateOtp();
+    await PasswordReset.findOneAndUpdate(
+      { email },
+      {
+        $set: {
+          otpHash: hashOtp(otp),
+          attempts: 0,
+          lastSentAt: new Date(),
+          verified: false,
+          expiresAt: new Date(Date.now() + OTP_TTL_MS),
+        },
+        $unset: { resetTokenHash: 1 },
+      },
+      { upsert: true, returnDocument: "after" },
+    );
+
+    try {
+      await sendOtpEmail(email, otp, "reset");
+    } catch (mailErr) {
+      console.error("Failed to send password reset email:", mailErr);
+      await PasswordReset.deleteOne({ email });
+      // Still respond 200 — don't reveal that the account exists.
+    }
+
+    res.json(ALWAYS_OK);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Password reset: step 2 — verify code ────────────────────────────────
+export async function passwordVerify(req: Request, res: Response, next: NextFunction) {
+  try {
+    const email = normalizeEmail(str(body(req).email));
+    const code  = str(body(req).code).trim();
+
+    // Atomic increment before comparing (same pattern as signupVerify).
+    const record = await PasswordReset.findOneAndUpdate(
+      {
+        email,
+        verified: false,
+        attempts: { $lt: OTP_MAX_ATTEMPTS },
+        expiresAt: { $gt: new Date() },
+      },
+      { $inc: { attempts: 1 } },
+      { returnDocument: "after" },
+    );
+
+    if (!record) {
+      // Check if attempts are exhausted vs expired/not-found.
+      const stale = await PasswordReset.findOne({
+        email,
+        verified: false,
+        expiresAt: { $gt: new Date() },
+      });
+      if (stale && stale.attempts >= OTP_MAX_ATTEMPTS) {
+        res.status(429).json({ error: "Too many wrong attempts. Please request a new code." });
+      } else {
+        res.status(400).json({ error: "Incorrect or expired code." });
+      }
+      return;
+    }
+
+    if (!verifyOtp(code, record.otpHash)) {
+      res.status(400).json({
+        error: "Incorrect or expired code.",
+        attemptsLeft: Math.max(0, OTP_MAX_ATTEMPTS - record.attempts),
+      });
+      return;
+    }
+
+    const resetToken = randomBytes(32).toString("hex");
+    const RESET_SESSION_MS = 30 * 60 * 1000;
+    record.verified        = true;
+    record.resetTokenHash  = hashOtp(resetToken);
+    record.expiresAt       = new Date(Date.now() + RESET_SESSION_MS);
+    await record.save();
+
+    res.json({ ok: true, resetToken });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── Password reset: step 3 — set new password ────────────────────────────
+export async function passwordReset(req: Request, res: Response, next: NextFunction) {
+  try {
+    const email       = normalizeEmail(str(body(req).email));
+    const resetToken  = str(body(req).resetToken);
+    const newPassword = str(body(req).newPassword);
+
+    const pwErr = validatePassword(newPassword);
+    if (pwErr) { res.status(400).json({ error: pwErr }); return; }
+
+    const EXPIRED = "Your reset session expired. Please start again.";
+
+    const record = await PasswordReset.findOne({
+      email,
+      verified: true,
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (
+      !record ||
+      !record.resetTokenHash ||
+      !/^[0-9a-f]{64}$/.test(resetToken) ||
+      !verifyOtp(resetToken, record.resetTokenHash)
+    ) {
+      res.status(400).json({ error: EXPIRED });
+      return;
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      // Account deleted between the reset request and now.
+      await PasswordReset.deleteOne({ email });
+      res.status(400).json({ error: EXPIRED });
+      return;
+    }
+
+    user.passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await user.save();
+    await PasswordReset.deleteOne({ email });
+
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
