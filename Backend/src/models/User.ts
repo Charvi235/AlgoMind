@@ -32,4 +32,8 @@ const UserSchema = new Schema<IUser>(
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
 );
 
+// Supports the leaderboard query: sort by XP desc, then by sign-up date asc
+// (earlier sign-up wins ties), and the "my rank" count query (totalXP > X).
+UserSchema.index({ totalXP: -1, created_at: 1 });
+
 export default mongoose.model<IUser>("User", UserSchema);
