@@ -5,7 +5,7 @@ const PROFILE_STATS = {
   currentStreak: 7,
   longestStreak: 21,
   totalXP: 12480,
-  level: 13,
+  rank: 13,
   levelProgress: 68,
 };
 
@@ -152,13 +152,17 @@ function ActivityHeatmap() {
         </div>
       </div>
 
-      <div className="mt-4 flex items-center justify-end gap-2 text-xs text-textMuted" aria-label="Activity intensity legend">
+      <div
+        className="mt-4 flex items-center justify-end gap-2 text-xs text-textMuted"
+        role="img"
+        aria-label="Activity intensity legend, from less to more"
+      >
         <span>Less</span>
         {INTENSITY_CLASSES.map((className, index) => (
           <span
             key={className}
             className={`h-[11px] w-[11px] rounded-[2px] ${className}`}
-            aria-label={`Intensity level ${index}`}
+            aria-hidden="true"
           />
         ))}
         <span>More</span>
@@ -176,7 +180,7 @@ export default function UserProfile() {
     { label: "Current Streak", value: `${PROFILE_STATS.currentStreak} days`, Icon: Flame, color: "text-gold" },
     { label: "Longest Streak", value: `${PROFILE_STATS.longestStreak} days`, Icon: Trophy, color: "text-node" },
     { label: "Total XP Earned", value: PROFILE_STATS.totalXP.toLocaleString(), Icon: Star, color: "text-gold" },
-    { label: "Current Level", value: `${PROFILE_STATS.level}`, Icon: Award, color: "text-teal" },
+    { label: "Current Rank", value: `${PROFILE_STATS.rank}`, Icon: Award, color: "text-teal" },
   ];
 
   return (
@@ -187,6 +191,7 @@ export default function UserProfile() {
       >
         <div
           className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-2 border-node bg-background text-3xl font-bold text-node shadow-glow-node"
+          role="img"
           aria-label={`${user.username}'s avatar`}
         >
           {user.username.charAt(0).toUpperCase()}
@@ -194,7 +199,7 @@ export default function UserProfile() {
         <div>
           <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-textMuted">Player profile</p>
           <h1 className="text-2xl font-bold text-textPrimary sm:text-3xl">{user.username}</h1>
-          <p className="mt-1 text-sm text-node">Level {PROFILE_STATS.level} player</p>
+          <p className="mt-1 text-sm text-node">Level {PROFILE_STATS.rank} player</p>
         </div>
       </section>
 
@@ -213,11 +218,11 @@ export default function UserProfile() {
                 <Icon size={18} className={color} aria-hidden="true" />
               </div>
               <p className={`font-mono text-2xl font-bold ${color}`}>{value}</p>
-              {label === "Current Level" && (
+              {label === "Current Rank" && (
                 <div
                   className="mt-4 h-1.5 overflow-hidden rounded-full bg-background"
                   role="progressbar"
-                  aria-label="Progress to next level"
+                  aria-label="Progress to next rank"
                   aria-valuemin={0}
                   aria-valuemax={100}
                   aria-valuenow={PROFILE_STATS.levelProgress}
