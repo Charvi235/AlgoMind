@@ -6,6 +6,7 @@ import ProtectedRoute   from "./components/ProtectedRoute";
 // ── Core pages ────────────────────────────────────────────────────────────────
 import Dashboard            from "./pages/Dashboard";
 import Leaderboard          from "./pages/Leaderboard";
+import UserProfile          from "./pages/UserProfile";
 
 // ── Auth / landing pages (own layout — no Navbar) ─────────────────────────────
 import LandingPage          from "./pages/LandingPage";
@@ -82,6 +83,11 @@ export default function App() {
         <Route path="/leaderboard" element={
           <ProtectedRoute>
             <AppLayout><PageWrapper><Leaderboard /></PageWrapper></AppLayout>
+          </ProtectedRoute>
+        } />
+        <Route path="/profile" element={
+          <ProtectedRoute>
+            <AppLayout><PageWrapper><UserProfile /></PageWrapper></AppLayout>
           </ProtectedRoute>
         } />
 

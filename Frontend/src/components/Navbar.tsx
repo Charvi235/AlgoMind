@@ -74,7 +74,11 @@ export default function Navbar() {
               </div>
 
               {/* User avatar + username */}
-              <div className="flex items-center gap-2">
+              <Link
+                to="/profile"
+                className="flex items-center gap-2 rounded-lg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-node focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                aria-label={`View ${user.username}'s profile`}
+              >
                 <div
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 border-node bg-panel text-xs font-bold text-node shadow-glow-node select-none"
                   aria-hidden="true"
@@ -84,7 +88,7 @@ export default function Navbar() {
                 <span className="hidden sm:block font-sans text-sm font-medium text-textPrimary">
                   {user.username}
                 </span>
-              </div>
+              </Link>
 
               {/* Log out button */}
               <button
