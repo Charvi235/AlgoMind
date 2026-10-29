@@ -84,7 +84,7 @@ export default function SoloSession() {
       roundsCompleted: raw.roundsCompleted,
       correctCount: raw.correctCount,
       accuracy: raw.accuracy,
-      xp: 0,
+      xp: raw.xp,
     });
   }, [scored, finish, goToResults]);
 

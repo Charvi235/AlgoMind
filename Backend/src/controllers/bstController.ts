@@ -1,7 +1,8 @@
   import type { Request, Response } from "express";
   import { randomUUID } from "crypto";
-    import jwt from "jsonwebtoken";
+  import jwt from "jsonwebtoken";
   import BstMatch from "../models/BstMatch";
+  import { recordActivityAndXP } from "../utils/activityTracker";
 
 const BST_ROUND_MS = 60_000;
 
@@ -201,6 +202,15 @@ export function resolveBstFinalOutcome(
       );
 
       const match = finalized ?? existing;
+      if (finalized && userId && finalized.score > 0) {
+        const xpClaim = await BstMatch.findOneAndUpdate(
+          { _id: finalized._id, xpRecorded: { $ne: true } },
+          { $set: { xpRecorded: true } },
+          { new: true }
+        );
+        if (xpClaim) await recordActivityAndXP(userId, finalized.score);
+      }
+
       res.status(200).json({
         success: true,
         message: validCompletion

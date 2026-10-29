@@ -505,7 +505,7 @@ export default function ResultsScreen() {
       {stats.mode === "solo" ? (
         <SoloResultCard
           stats={stats as SoloSessionStats}
-          xpAwarded={SERVER_SCORED_GAMES.has(gameType)}
+          xpAwarded={SERVER_SCORED_GAMES.has(gameType) || gameType === "bst"}
         />
       ) : (
         <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch">
