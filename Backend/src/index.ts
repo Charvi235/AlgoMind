@@ -9,6 +9,7 @@ import authRoutes from "./routes/authRoutes";
 import dijkstraRoutes from "./routes/dijkstraRoutes";
 import bstRoutes from "./routes/bstRoutes";
 import sessionRoutes from "./routes/sessionRoutes";
+import statsRoutes from "./routes/statsRoutes";
 import { registerSocketHandlers } from "./sockets/socketHandlers";
 import sortingRoutes from "./routes/sortingRoutes";
 import { registerSortingSocketHandlers } from "./sockets/sortingSocketHandlers";
@@ -76,7 +77,12 @@ app.use("/api/auth", authRoutes);
 app.use("/api/sessions", sessionRoutes);
 app.use("/api/games/dijkstra", dijkstraRoutes);
 app.use("/api/games/bst", bstRoutes);
+
 app.use("/api/games/sorting", sortingRoutes);
+
+app.use("/api", statsRoutes);
+
+
 // ─── Error handler (must be last) ──────────────────────────────
 app.use(errorHandler);
 

@@ -10,6 +10,8 @@
  *  - Network failures throw a user-friendly message
  */
 
+import { getToken, clearToken } from "./auth";
+
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 // ─── Error type ───────────────────────────────────────────────────────────────
@@ -82,4 +84,24 @@ export function apiPost<T = unknown>(path: string, body: unknown): Promise<T> {
 
 export function apiGet<T = unknown>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: "GET" });
+}
+
+/**
+ * Authenticated GET: attaches the stored Bearer token.
+ * On 401 clears the token and redirects to /login (matching soloApi.ts behaviour).
+ */
+export async function apiAuthGet<T = unknown>(path: string): Promise<T> {
+  const token = getToken();
+  try {
+    return await apiFetch<T>(path, {
+      method: "GET",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      clearToken();
+      window.location.assign("/login");
+    }
+    throw err;
+  }
 }

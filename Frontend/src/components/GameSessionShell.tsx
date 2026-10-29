@@ -79,8 +79,10 @@ export interface GameSessionShellProps {
    * Shown in the score bar next to the opponent's score.
    */
   opponentLabel?: string;
-  /** Called when the 60-second timer expires */
+    /** Called when the 60-second timer expires */
   onSessionEnd:  (stats: SessionEndStats) => void;
+  /** Solo, server-scored games: the session id the Board sends to the API. */
+  sessionId?:    string;
 }
 
 
@@ -92,9 +94,12 @@ const formatCountdown = (s: number) => `${fmt2(Math.floor(s / 60))}:${fmt2(s % 6
 export default function GameSessionShell({
   gameType,
   mode,
+
   roomId,
   opponentLabel = "Opponent",
+
   onSessionEnd,
+  sessionId,
 }: GameSessionShellProps) {
   const entry = isGameType(gameType) ? gameRegistry[gameType] : null;
   const Board = isGameType(gameType) ? BOARD_MAP[gameType] : null;
@@ -350,7 +355,11 @@ export default function GameSessionShell({
           key={boardKey}
           round={round}
           mode={mode}
+
           roomId={roomId}
+
+          sessionId={sessionId}
+
           onRoundComplete={handleRoundComplete}
           onRoundTimerChange={gameType === "bst" && mode === "solo" ? setBstRoundSeconds : undefined}
           onRoundChange={mode === "live" ? handleLiveRoundChange : undefined}

@@ -11,6 +11,7 @@ import Leaderboard          from "./pages/Leaderboard";
 import LandingPage          from "./pages/LandingPage";
 import LoginPage            from "./pages/LoginPage";
 import SignupPage           from "./pages/SignupPage";
+import ForgotPasswordPage   from "./pages/ForgotPasswordPage";
 
 // ── Shared game-flow pages ────────────────────────────────────────────────────
 import GameModeSelect       from "./pages/GameModeSelect";
@@ -67,6 +68,9 @@ export default function App() {
         } />
         <Route path="/signup" element={
           <PageWrapper><SignupPage /></PageWrapper>
+        } />
+        <Route path="/forgot-password" element={
+          <PageWrapper><ForgotPasswordPage /></PageWrapper>
         } />
 
         {/* ── Protected pages — inside AppLayout (with Navbar) ────────── */}

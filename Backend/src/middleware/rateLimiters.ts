@@ -73,3 +73,28 @@ export const loginAccountLimiter = rateLimit({
   },
   message: tooMany("Too many failed logins for this account. Please try again in 15 minutes."),
 });
+
+// ── Password reset limiters ───────────────────────────────────────────────────
+// The forgot endpoint always returns 200 (no account enumeration), so even
+// a generous limit is fine. Verify and reset are per-IP only.
+
+export const passwordForgotLimiter = rateLimit({
+  ...common,
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  message: tooMany("Too many password reset requests. Please try again in an hour."),
+});
+
+export const passwordVerifyLimiter = rateLimit({
+  ...common,
+  windowMs: 15 * 60 * 1000,
+  limit: 100,
+  message: tooMany("Too many attempts. Please try again in a few minutes."),
+});
+
+export const passwordResetLimiter = rateLimit({
+  ...common,
+  windowMs: 15 * 60 * 1000,
+  limit: 100,
+  message: tooMany("Too many requests. Please try again in a few minutes."),
+});

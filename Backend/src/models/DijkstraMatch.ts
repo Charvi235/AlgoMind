@@ -1,15 +1,4 @@
-/**
- * DijkstraMatch.ts
- *
- * Temporary server-side storage for an in-progress Dijkstra round.
- * The shortestPath is NEVER sent to the client — only used here to
- * validate each step the player takes. Documents auto-expire after
- * 1 hour via the TTL index, so no manual cleanup job is needed.
- */
-
-
-import mongoose, { Schema, Document } from "mongoose";
-
+import mongoose, { Schema, Document, Types } from "mongoose";
 
 export interface IEdge {
   source: string;
@@ -17,15 +6,18 @@ export interface IEdge {
   weight: number;
 }
 
-
 export interface INode {
   id: string;
   label: string;
 }
 
-
 export interface IDijkstraMatch extends Document {
   graphId: string;
+  userId?: Types.ObjectId;     // who asked for this graph
+  sessionId?: Types.ObjectId;  // the solo session it belongs to, if any
+  round: number;
+  currentNode: string;         // where the player is, tracked by the server
+  completed: boolean;          // a graph can complete a round only once
   nodes: INode[];
   edges: IEdge[];
   start: string;
@@ -33,7 +25,6 @@ export interface IDijkstraMatch extends Document {
   shortestPath: string[];
   createdAt: Date;
 }
-
 
 const EdgeSchema = new Schema<IEdge>(
   {
@@ -44,7 +35,6 @@ const EdgeSchema = new Schema<IEdge>(
   { _id: false }
 );
 
-
 const NodeSchema = new Schema<INode>(
   {
     id: { type: String, required: true },
@@ -53,9 +43,13 @@ const NodeSchema = new Schema<INode>(
   { _id: false }
 );
 
-
 const DijkstraMatchSchema = new Schema<IDijkstraMatch>({
   graphId: { type: String, required: true, unique: true },
+  userId: { type: Schema.Types.ObjectId, ref: "User" },
+  sessionId: { type: Schema.Types.ObjectId, ref: "GameSession" },
+  round: { type: Number, default: 1 },
+  currentNode: { type: String, required: true },
+  completed: { type: Boolean, default: false },
   nodes: { type: [NodeSchema], required: true },
   edges: { type: [EdgeSchema], required: true },
   start: { type: String, required: true },
@@ -63,6 +57,5 @@ const DijkstraMatchSchema = new Schema<IDijkstraMatch>({
   shortestPath: { type: [String], required: true },
   createdAt: { type: Date, default: Date.now, expires: 3600 }, // TTL: auto-delete after 1 hour
 });
-
 
 export default mongoose.model<IDijkstraMatch>("DijkstraMatch", DijkstraMatchSchema);

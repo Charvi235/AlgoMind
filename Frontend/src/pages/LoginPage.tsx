@@ -13,7 +13,7 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Eye, EyeOff, Sparkles } from "lucide-react";
+import { Eye, EyeOff, Sparkles, CheckCircle2 } from "lucide-react";
 import StarfieldBackground from "../components/StarfieldBackground";
 import Button from "../components/ui/Button";
 import { useAuth } from "../context/AuthContext";
@@ -124,6 +124,15 @@ export default function LoginPage() {
   const location        = useLocation();
   const destination     = safeFrom(location.state);
 
+  // Success banner forwarded from ForgotPasswordPage after a successful reset.
+  const successMessage =
+    location.state !== null &&
+    typeof location.state === "object" &&
+    "success" in location.state &&
+    typeof (location.state as { success: unknown }).success === "string"
+      ? (location.state as { success: string }).success
+      : "";
+
   const [identifier,   setIdentifier]   = useState("");
   const [password,     setPassword]     = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -197,6 +206,17 @@ export default function LoginPage() {
 
             {/* Form */}
             <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
+              {/* Password-reset success banner */}
+              {successMessage && (
+                <div
+                  role="status"
+                  className="flex items-start gap-2.5 rounded-lg border border-teal/40 bg-teal/10 px-4 py-2.5 text-sm text-teal"
+                >
+                  <CheckCircle2 size={15} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span>{successMessage}</span>
+                </div>
+              )}
+
               {/* Server-level error */}
               {serverError && (
                 <p
@@ -247,16 +267,12 @@ export default function LoginPage() {
               />
 
               <div className="flex justify-end">
-                <button
-                  type="button"
+                <Link
+                  to="/forgot-password"
                   className="text-xs text-textMuted hover:text-textPrimary transition-colors focus-visible:outline-none focus-visible:underline rounded"
-                  aria-label="Forgot password — not yet available"
-                  onClick={() => {
-                    // TODO: wire up password-reset flow
-                  }}
                 >
                   Forgot password?
-                </button>
+                </Link>
               </div>
 
               <Button
