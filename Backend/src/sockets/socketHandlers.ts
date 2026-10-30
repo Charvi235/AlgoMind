@@ -311,7 +311,10 @@ function finalizeBstMatch(io: Server, room: Room, reason: "winner" | "timeout" |
       });
 
       await Promise.all(loggedIn.map((player) =>
-        recordActivityAndXP(player.userId!, player.correctCount * 10)
+        recordActivityAndXP(
+          player.userId!,
+          Math.max(0, player.correctCount - player.completedRounds) * 10
+        )
       ));
     } catch (error) {
       console.error("Failed to save BST match result:", error);

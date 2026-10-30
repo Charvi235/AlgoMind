@@ -1,13 +1,26 @@
 import { Award, Flame, Star, Trophy } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../context/AuthContext";
+import { apiAuthGet, ApiError } from "../lib/api";
 
-const PROFILE_STATS = {
-  currentStreak: 7,
-  longestStreak: 21,
-  totalXP: 12480,
-  rank: 13,
-  levelProgress: 68,
-};
+interface ProfileSummary {
+  username: string;
+  totalXP: number;
+  current_streak: number;
+  longest_streak: number;
+  rank: number | null;
+}
+
+interface HeatmapDay {
+  date: string;
+  points: number;
+}
+
+interface HeatmapResponse {
+  year: number;
+  totalPoints: number;
+  dailyActivity: HeatmapDay[];
+}
 
 const WEEKDAY_LABELS = ["", "Mon", "", "Wed", "", "Fri", ""];
 const INTENSITY_CLASSES = [
@@ -20,31 +33,24 @@ const INTENSITY_CLASSES = [
 
 interface ActivityDay {
   date: Date;
-  count: number;
+  points: number;
   inRange: boolean;
 }
 
-function getActivityCount(date: Date): number {
-  const dateKey = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
-  let hash = 0;
-  for (const character of dateKey) {
-    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
-  }
-  return hash % 11 < 4 ? 0 : (hash % 11) - 2;
+function getDateKey(date: Date): string {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())).toISOString().slice(0, 10);
 }
 
-function createActivityWeeks(today: Date): ActivityDay[][] {
-  const end = new Date(today);
-  end.setHours(0, 0, 0, 0);
-
+function createActivityWeeks(today: Date, pointsByDate: Map<string, number>): ActivityDay[][] {
+  const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
   const firstDay = new Date(end);
-  firstDay.setDate(firstDay.getDate() - 364);
+  firstDay.setUTCDate(firstDay.getUTCDate() - 364);
 
   const gridStart = new Date(firstDay);
-  gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+  gridStart.setUTCDate(gridStart.getUTCDate() - gridStart.getUTCDay());
 
   const gridEnd = new Date(end);
-  gridEnd.setDate(gridEnd.getDate() + (6 - gridEnd.getDay()));
+  gridEnd.setUTCDate(gridEnd.getUTCDate() + (6 - gridEnd.getUTCDay()));
 
   const weeks: ActivityDay[][] = [];
   const date = new Date(gridStart);
@@ -54,12 +60,13 @@ function createActivityWeeks(today: Date): ActivityDay[][] {
     for (let day = 0; day < 7; day += 1) {
       const currentDate = new Date(date);
       const inRange = currentDate >= firstDay && currentDate <= end;
+      const dateKey = getDateKey(currentDate);
       week.push({
         date: currentDate,
-        count: inRange ? getActivityCount(currentDate) : 0,
+        points: inRange ? (pointsByDate.get(dateKey) ?? 0) : 0,
         inRange,
       });
-      date.setDate(date.getDate() + 1);
+      date.setUTCDate(date.getUTCDate() + 1);
     }
     weeks.push(week);
   }
@@ -69,23 +76,33 @@ function createActivityWeeks(today: Date): ActivityDay[][] {
 
 function intensityFor(count: number): number {
   if (count === 0) return 0;
-  if (count <= 2) return 1;
-  if (count <= 4) return 2;
-  if (count <= 7) return 3;
+  if (count <= 20) return 1;
+  if (count <= 40) return 2;
+  if (count <= 60) return 3;
+  if (count <= 80) return 4;
   return 4;
 }
 
-function ActivityHeatmap() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const weeks = createActivityWeeks(today);
+function ActivityHeatmap({ dailyActivity }: { dailyActivity: HeatmapDay[] }) {
+  const pointsByDate = useMemo(
+    () => new Map(dailyActivity.map(({ date, points }) => [date, points])),
+    [dailyActivity],
+  );
+
+  const today = useMemo(() => {
+    const date = new Date();
+    date.setUTCHours(0, 0, 0, 0);
+    return date;
+  }, []);
+
+  const weeks = createActivityWeeks(today, pointsByDate);
   let previousMonth = -1;
 
   const monthLabels = weeks.map((week) => {
     const firstInRange = week.find((day) => day.inRange);
-    if (!firstInRange || firstInRange.date.getMonth() === previousMonth) return "";
-    previousMonth = firstInRange.date.getMonth();
-    return firstInRange.date.toLocaleString("en", { month: "short" });
+    if (!firstInRange || firstInRange.date.getUTCMonth() === previousMonth) return "";
+    previousMonth = firstInRange.date.getUTCMonth();
+    return new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" }).format(firstInRange.date);
   });
 
   return (
@@ -112,7 +129,7 @@ function ActivityHeatmap() {
           >
             <span />
             {monthLabels.map((label, index) => (
-              <span key={index} className="whitespace-nowrap text-[10px] leading-none text-textMuted">
+              <span key={`${label}-${index}`} className="whitespace-nowrap text-[10px] leading-none text-textMuted">
                 {label}
               </span>
             ))}
@@ -121,26 +138,30 @@ function ActivityHeatmap() {
           <div className="flex gap-2">
             <div className="grid grid-rows-7 gap-[3px]" aria-hidden="true">
               {WEEKDAY_LABELS.map((label, index) => (
-                <span key={index} className="h-[11px] text-[9px] leading-[11px] text-textMuted">
+                <span key={`${label}-${index}`} className="h-[11px] text-[9px] leading-[11px] text-textMuted">
                   {label}
                 </span>
               ))}
             </div>
             <div className="flex gap-[3px]" role="list" aria-label="Daily activity">
               {weeks.map((week, weekIndex) => (
-                <div key={weekIndex} className="grid grid-rows-7 gap-[3px]">
-                  {week.map(({ date, count, inRange }) => {
-                    const dateLabel = date.toLocaleDateString("en", {
+                <div key={`week-${weekIndex}`} className="grid grid-rows-7 gap-[3px]">
+                  {week.map(({ date, points, inRange }) => {
+                    const dateLabel = date.toLocaleDateString("en-US", {
                       month: "long",
                       day: "numeric",
                       year: "numeric",
+                      timeZone: "UTC",
                     });
+                    const tooltip = inRange
+                      ? `Date: ${dateLabel}\nSubmission Points: ${points}`
+                      : undefined;
                     return (
                       <span
-                        key={date.toISOString()}
-                        className={`h-[11px] w-[11px] rounded-[2px] ${INTENSITY_CLASSES[intensityFor(count)]} ${inRange ? "" : "invisible"}`}
-                        title={inRange ? `${count} activities on ${dateLabel}` : undefined}
-                        aria-label={inRange ? `${count} activities on ${dateLabel}` : undefined}
+                        key={getDateKey(date)}
+                        className={`h-[11px] w-[11px] rounded-[2px] ${INTENSITY_CLASSES[intensityFor(points)]} ${inRange ? "" : "invisible"}`}
+                        title={tooltip}
+                        aria-label={tooltip}
                         role={inRange ? "listitem" : undefined}
                       />
                     );
@@ -160,7 +181,7 @@ function ActivityHeatmap() {
         <span>Less</span>
         {INTENSITY_CLASSES.map((className, index) => (
           <span
-            key={className}
+            key={`${className}-${index}`}
             className={`h-[11px] w-[11px] rounded-[2px] ${className}`}
             aria-hidden="true"
           />
@@ -173,15 +194,52 @@ function ActivityHeatmap() {
 
 export default function UserProfile() {
   const { user } = useAuth();
+  const [profile, setProfile] = useState<ProfileSummary | null>(null);
+  const [heatmap, setHeatmap] = useState<HeatmapResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const loadProfile = async () => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const [profileData, heatmapData] = await Promise.all([
+          apiAuthGet<ProfileSummary>("/api/profile"),
+          apiAuthGet<HeatmapResponse>("/api/profile/heatmap"),
+        ]);
+
+        setProfile(profileData);
+        setHeatmap(heatmapData);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) return;
+        setError(err instanceof Error ? err.message : "Couldn't load your profile." );
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    void loadProfile();
+  }, [user]);
 
   if (!user) return null;
 
-  const stats = [
-    { label: "Current Streak", value: `${PROFILE_STATS.currentStreak} days`, Icon: Flame, color: "text-gold" },
-    { label: "Longest Streak", value: `${PROFILE_STATS.longestStreak} days`, Icon: Trophy, color: "text-node" },
-    { label: "Total XP Earned", value: PROFILE_STATS.totalXP.toLocaleString(), Icon: Star, color: "text-gold" },
-    { label: "Current Rank", value: `${PROFILE_STATS.rank}`, Icon: Award, color: "text-teal" },
-  ];
+  const stats = profile
+    ? [
+        { label: "Current Streak", value: `${profile.current_streak} days`, Icon: Flame, color: "text-gold" },
+        { label: "Longest Streak", value: `${profile.longest_streak} days`, Icon: Trophy, color: "text-node" },
+        { label: "Total XP Earned", value: profile.totalXP.toLocaleString(), Icon: Star, color: "text-gold" },
+        { label: "Current Rank", value: profile.rank != null ? `#${profile.rank}` : "—", Icon: Award, color: "text-teal" },
+      ]
+    : [
+        { label: "Current Streak", value: "—", Icon: Flame, color: "text-gold" },
+        { label: "Longest Streak", value: "—", Icon: Trophy, color: "text-node" },
+        { label: "Total XP Earned", value: "—", Icon: Star, color: "text-gold" },
+        { label: "Current Rank", value: "—", Icon: Award, color: "text-teal" },
+      ];
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
@@ -198,8 +256,8 @@ export default function UserProfile() {
         </div>
         <div>
           <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-textMuted">Player profile</p>
-          <h1 className="text-2xl font-bold text-textPrimary sm:text-3xl">{user.username}</h1>
-          <p className="mt-1 text-sm text-node">Level {PROFILE_STATS.rank} player</p>
+          <h1 className="text-2xl font-bold text-textPrimary sm:text-3xl">{profile?.username ?? user.username}</h1>
+          <p className="mt-1 text-sm text-node">{profile?.rank != null ? `Rank #${profile.rank} player` : "Player profile"}</p>
         </div>
       </section>
 
@@ -207,38 +265,29 @@ export default function UserProfile() {
         <div className="mb-3">
           <h2 className="text-lg font-semibold text-textPrimary">Player statistics</h2>
         </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {stats.map(({ label, value, Icon, color }) => (
-            <article
-              key={label}
-              className="rounded-xl border border-panelBorder bg-panel p-5 shadow-panel"
-            >
-              <div className="mb-4 flex items-center justify-between">
-                <span className="text-xs font-medium uppercase tracking-wider text-textMuted">{label}</span>
-                <Icon size={18} className={color} aria-hidden="true" />
-              </div>
-              <p className={`font-mono text-2xl font-bold ${color}`}>{value}</p>
-              {label === "Current Rank" && (
-                <div
-                  className="mt-4 h-1.5 overflow-hidden rounded-full bg-background"
-                  role="progressbar"
-                  aria-label="Progress to next rank"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={PROFILE_STATS.levelProgress}
-                >
-                  <div
-                    className="h-full rounded-full bg-teal"
-                    style={{ width: `${PROFILE_STATS.levelProgress}%` }}
-                  />
+        {error ? (
+          <div className="rounded-xl border border-error/40 bg-error/10 px-4 py-3 text-sm text-error">
+            {error}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {stats.map(({ label, value, Icon, color }) => (
+              <article
+                key={label}
+                className="rounded-xl border border-panelBorder bg-panel p-5 shadow-panel"
+              >
+                <div className="mb-4 flex items-center justify-between">
+                  <span className="text-xs font-medium uppercase tracking-wider text-textMuted">{label}</span>
+                  <Icon size={18} className={color} aria-hidden="true" />
                 </div>
-              )}
-            </article>
-          ))}
-        </div>
+                <p className={`font-mono text-2xl font-bold ${color}`}>{loading ? "—" : value}</p>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
-      <ActivityHeatmap />
+      {!error && <ActivityHeatmap dailyActivity={heatmap?.dailyActivity ?? []} />}
     </div>
   );
 }

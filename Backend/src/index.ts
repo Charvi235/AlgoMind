@@ -10,6 +10,7 @@ import dijkstraRoutes from "./routes/dijkstraRoutes";
 import bstRoutes from "./routes/bstRoutes";
 import sessionRoutes from "./routes/sessionRoutes";
 import statsRoutes from "./routes/statsRoutes";
+import userProfileRoutes from "./routes/userProfileRoutes";
 import { registerSocketHandlers } from "./sockets/socketHandlers";
 import sortingRoutes from "./routes/sortingRoutes";
 import { registerSortingSocketHandlers } from "./sockets/sortingSocketHandlers";
@@ -77,6 +78,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/sessions", sessionRoutes);
 app.use("/api/games/dijkstra", dijkstraRoutes);
 app.use("/api/games/bst", bstRoutes);
+app.use("/api/profile", userProfileRoutes);
 
 app.use("/api/games/sorting", sortingRoutes);
 
