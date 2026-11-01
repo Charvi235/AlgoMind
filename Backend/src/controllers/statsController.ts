@@ -9,7 +9,7 @@ import mongoose from "mongoose";
 // Competition ranking: 1 + the number of users with strictly greater XP.
 // Returns null when the user's XP is 0.
 
-async function computeRank(userId: string, myXP: number): Promise<number | null> {
+export async function computeRank(userId: string, myXP: number): Promise<number | null> {
   if (myXP === 0) return null;
   const ahead = await User.countDocuments({ totalXP: { $gt: myXP } });
   return ahead + 1;
