@@ -162,11 +162,11 @@ export interface FloydWarshallBoardProps {
 // ─── Component ─────────────────────────────────────────────────────────────────
 export default function FloydWarshallBoard({
   mode = "solo",
-  round = 1,
+  round: _round = 1,
   onWin,
   onReset,
   onRoundComplete,
-  onRoundChange,
+  onRoundChange: _onRoundChange,
 }: FloydWarshallBoardProps) {
   // Generate ONE graph when this board mounts.
   const [graph, setGraph] = useState(() =>
