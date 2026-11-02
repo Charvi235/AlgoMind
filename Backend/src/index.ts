@@ -14,7 +14,7 @@ import userProfileRoutes from "./routes/userProfileRoutes";
 import { registerSocketHandlers } from "./sockets/socketHandlers";
 import sortingRoutes from "./routes/sortingRoutes";
 import { registerSortingSocketHandlers } from "./sockets/sortingSocketHandlers";
-
+import floydWarshallRoutes from "./routes/floydWarshallRoutes";
 dotenv.config();
 
 // Fail fast: a missing secret must crash the deploy loudly, never
@@ -84,7 +84,7 @@ app.use("/api/games/sorting", sortingRoutes);
 
 app.use("/api", statsRoutes);
 
-
+app.use("/api/games/floyd-warshall", floydWarshallRoutes);
 // ─── Error handler (must be last) ──────────────────────────────
 app.use(errorHandler);
 

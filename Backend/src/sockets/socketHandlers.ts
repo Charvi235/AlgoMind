@@ -27,6 +27,7 @@ import {
   dijkstraShortestPath,
   isValidShortestPathStep,
 } from "../utils/graphGenerator";
+import { generateFloydWarshallGraph } from "../utils/floydWarshallGenerator";
 import {
   generateBstQuestion,
   findBstInsertion,
@@ -42,10 +43,11 @@ const MATCH_SECONDS = 60;
 const DISCONNECT_GRACE_MS = 15000;
 const BST_MATCH_SECONDS = 120;
 const BST_MAX_ROUNDS = 4;
+const FLOYD_WARSHALL_MAX_ROUNDS = 4;
 const GUEST_ROOM_GAMES = new Set(["bst"]);
 
 // Games that have a live (multiplayer) implementation on the server.
-const LIVE_GAMES = new Set(["dijkstra", "bst"]);
+const LIVE_GAMES = new Set(["dijkstra", "bst", "floyd-warshall"]);
 
 export interface BstPlayerMatchState {
   socketId: string;
@@ -576,7 +578,86 @@ export function registerSocketHandlers(io: Server) {
 
     next();
   });
+function startFloydWarshallMatch(io: Server, room: Room) {
+  room.status = "active";
+  room.round = 1;
 
+  const roundData = generateFloydWarshallGraph(room.round);
+
+  room.currentRoundData = roundData;
+
+  room.floydWarshallState = {
+    playerProgress: new Map(
+      room.players.map((player) => [
+        player.socketId,
+        {
+          currentStep: 0,
+          matrix: roundData.initialMatrix.map((row) => [...row]),
+        },
+      ])
+    ),
+  };
+
+  io.to(room.roomId).emit("match_start", {
+    round: room.round,
+    nodes: roundData.nodes,
+    edges: roundData.edges,
+    start: roundData.start,
+    target: roundData.target,
+    initialMatrix: roundData.initialMatrix,
+    totalSteps: roundData.steps.length,
+    currentStep: roundData.steps[0]
+  ? {
+      k: roundData.steps[0].k,
+      i: roundData.steps[0].i,
+      j: roundData.steps[0].j,
+    }
+  : null,
+  });
+  room.matchEndTimer = setTimeout(() => {
+  void endMatch(io, room);
+}, MATCH_SECONDS * 1000);
+}
+function advanceFloydWarshallRound(io: Server, room: Room) {
+  if (room.round >= FLOYD_WARSHALL_MAX_ROUNDS) {
+    void endMatch(io, room);
+    return;
+  }
+
+  room.round += 1;
+
+  const roundData = generateFloydWarshallGraph(room.round);
+  room.currentRoundData = roundData;
+
+  room.floydWarshallState = {
+    playerProgress: new Map(
+      room.players.map((player) => [
+        player.socketId,
+        {
+          currentStep: 0,
+          matrix: roundData.initialMatrix.map((row) => [...row]),
+        },
+      ])
+    ),
+  };
+
+  io.to(room.roomId).emit("floyd_round_start", {
+    round: room.round,
+    nodes: roundData.nodes,
+    edges: roundData.edges,
+    start: roundData.start,
+    target: roundData.target,
+    initialMatrix: roundData.initialMatrix,
+    totalSteps: roundData.steps.length,
+    currentStep: roundData.steps[0]
+  ? {
+      k: roundData.steps[0].k,
+      i: roundData.steps[0].i,
+      j: roundData.steps[0].j,
+    }
+  : null,
+  });
+}
   function startMatch(io: Server, room: Room) {
     room.status = "active";
     room.round = 1;
@@ -606,14 +687,18 @@ export function registerSocketHandlers(io: Server) {
     // Single source of truth for final stats: used for the winner decision,
     // the match_end payload AND the DB save.
     // Accuracy = correct steps / all attempts (wrong clicks count).
-    const stats = room.players.map((p) => ({
-      socketId: p.socketId,
-      userId: p.userId,
-      username: p.username ?? null,
-      roundsCompleted: p.correctCount,
-      accuracy: p.attempts > 0 ? Math.round((p.totalActions / p.attempts) * 100) : 0,
-      xp: p.correctCount * 10,
-    }));
+   const stats = room.players.map((p) => ({
+  socketId: p.socketId,
+  userId: p.userId,
+  username: p.username ?? null,
+  roundsCompleted: p.correctCount,
+  attempts: p.attempts,
+  correctSteps: p.totalActions,
+  accuracy: p.attempts > 0
+    ? Math.round((p.totalActions / p.attempts) * 100)
+    : 0,
+  xp: p.correctCount * 10,
+}));
 
     // Winner: more rounds wins; if rounds are equal, higher accuracy wins;
     // only if both are equal is it a real tie (winnerSocketId stays null).
@@ -675,6 +760,8 @@ export function registerSocketHandlers(io: Server) {
             mode: "live" as const,
             status: "completed" as const,
             roundsCompleted: s.roundsCompleted,
+            attempts: s.attempts,
+            correctSteps: s.correctSteps,
             accuracy: s.accuracy,
             xpEarned: s.xp,
             roomId: room.roomId,
@@ -710,7 +797,11 @@ export function registerSocketHandlers(io: Server) {
       if (room) {
         for (const p of room.players) io.sockets.sockets.get(p.socketId)?.join(room.roomId);
         io.to(room.roomId).emit("matched", { roomId: room.roomId });
-        startMatch(io, room);
+        if (room.gameType === "floyd-warshall") {
+  startFloydWarshallMatch(io, room);
+} else {
+  startMatch(io, room);
+}
       } else {
         socket.emit("queue_joined");
       }
@@ -790,13 +881,15 @@ export function registerSocketHandlers(io: Server) {
       socket.join(room.roomId);
       socket.emit("room_joined", { roomId: room.roomId, gameType: room.gameType, code: room.code });
       io.to(room.roomId).emit("matched", { roomId: room.roomId, gameType: room.gameType, code: room.code });
-      if (room.gameType === "bst") {
-        const host = room.players[0];
-        if (host) io.to(host.socketId).emit("opponent_joined", { roomId: room.roomId, gameType: room.gameType, code: room.code });
-        startBstMatch(io, room);
-      } else {
-        startMatch(io, room);
-      }
+     if (room.gameType === "bst") {
+  const host = room.players[0];
+  if (host) io.to(host.socketId).emit("opponent_joined", { roomId: room.roomId, gameType: room.gameType, code: room.code });
+  startBstMatch(io, room);
+} else if (room.gameType === "floyd-warshall") {
+  startFloydWarshallMatch(io, room);
+} else {
+  startMatch(io, room);
+}
     });
 
     // Host leaves the invite screen before anyone joined: drop the empty
@@ -846,18 +939,125 @@ export function registerSocketHandlers(io: Server) {
     // ── Reliable round-state fetch (handles the race where match_start
     // fires before the client's Board component has mounted) ──────────
     socket.on("request_round_state", () => {
-      const room = getRoomBySocket(socket.id);
-      if (!room || !room.currentRoundData) return;
-      const data = room.currentRoundData as DijkstraRoundData;
-      socket.emit("round_state", {
-        round: room.round,
-        nodes: data.nodes,
-        edges: data.edges,
-        start: data.start,
-        target: data.target,
-      });
+  const room = getRoomBySocket(socket.id);
+  if (!room || !room.currentRoundData) return;
+
+  if (room.gameType === "floyd-warshall") {
+    const data = room.currentRoundData as ReturnType<
+      typeof generateFloydWarshallGraph
+    >;
+
+    const progress = room.floydWarshallState?.playerProgress.get(socket.id);
+    if (!progress) return;
+
+    socket.emit("round_state", {
+      round: room.round,
+      nodes: data.nodes,
+      edges: data.edges,
+      start: data.start,
+      target: data.target,
+      initialMatrix: progress.matrix,
+      totalSteps: data.steps.length,
+      currentStep: data.steps[progress.currentStep]
+        ? {
+            k: data.steps[progress.currentStep].k,
+            i: data.steps[progress.currentStep].i,
+            j: data.steps[progress.currentStep].j,
+          }
+        : null,
     });
 
+    return;
+  }
+
+  const data = room.currentRoundData as DijkstraRoundData;
+
+  socket.emit("round_state", {
+    round: room.round,
+    nodes: data.nodes,
+    edges: data.edges,
+    start: data.start,
+    target: data.target,
+  });
+});
+socket.on("submit_floyd_answer", (payload?: { value?: unknown }) => {
+  const room = getRoomBySocket(socket.id);
+
+  if (
+    !room ||
+    room.gameType !== "floyd-warshall" ||
+    room.status !== "active" ||
+    !room.currentRoundData ||
+    !room.floydWarshallState
+  ) {
+    return;
+  }
+
+  const data = room.currentRoundData as ReturnType<
+    typeof generateFloydWarshallGraph
+  >;
+
+  const player = getPlayer(room, socket.id);
+  const progress = room.floydWarshallState.playerProgress.get(socket.id);
+
+  if (!player || !progress) return;
+
+  if (progress.currentStep >= data.steps.length) return;
+
+  player.attempts += 1;
+
+  const expectedStep = data.steps[progress.currentStep];
+  const value = payload?.value;
+
+  const correct =
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value === expectedStep.newValue;
+
+  if (correct) {
+    progress.matrix[expectedStep.i][expectedStep.j] =
+      expectedStep.newValue;
+
+    progress.currentStep += 1;
+
+    player.totalActions += 1;
+    player.correctCount += 1;
+    player.score += 10;
+  }
+
+  const completed = progress.currentStep >= data.steps.length;
+
+  socket.emit("floyd_answer_result", {
+    correct,
+    matrix: progress.matrix.map((row) => [...row]),
+    stepIndex: progress.currentStep,
+    totalSteps: data.steps.length,
+    currentStep: data.steps[progress.currentStep]
+      ? {
+          k: data.steps[progress.currentStep].k,
+          i: data.steps[progress.currentStep].i,
+          j: data.steps[progress.currentStep].j,
+        }
+      : null,
+    completed,
+    score: player.score,
+  });
+  if (completed) {
+  const allPlayersCompleted = room.players.every((roomPlayer) => {
+    const playerProgress =
+      room.floydWarshallState?.playerProgress.get(roomPlayer.socketId);
+
+    return (
+      playerProgress &&
+      playerProgress.currentStep >= data.steps.length
+    );
+  });
+
+ if (allPlayersCompleted) {
+  advanceFloydWarshallRound(io, room);
+}
+}
+});
     // ── Gameplay ─────────────────────────────────────────────────
     socket.on(
       "submit_step",
