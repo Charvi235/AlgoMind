@@ -14,6 +14,7 @@ import userProfileRoutes from "./routes/userProfileRoutes";
 import { registerSocketHandlers } from "./sockets/socketHandlers";
 import sortingRoutes from "./routes/sortingRoutes";
 import { registerSortingSocketHandlers } from "./sockets/sortingSocketHandlers";
+import linearStructureRoutes from "./routes/linearStructureRoutes";
 
 dotenv.config();
 
@@ -81,6 +82,7 @@ app.use("/api/games/bst", bstRoutes);
 app.use("/api/profile", userProfileRoutes);
 
 app.use("/api/games/sorting", sortingRoutes);
+app.use("/api/games/linear-structures", linearStructureRoutes);
 
 app.use("/api", statsRoutes);
 

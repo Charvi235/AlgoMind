@@ -87,6 +87,7 @@ function createBstTestRoom() {
     correctCount: 0,
     totalActions: 0,
     attempts: 0,
+    currentNode: "",
   };
   room.players.push(guestPlayer);
   room.status = "active";

@@ -8,6 +8,7 @@
 
 import { randomUUID } from "crypto";
 import type { BstMatchState } from "./socketHandlers";
+import type { LinearItem, LinearRound } from "../utils/linearStructureEngine";
 
 export interface Player {
   socketId: string;
@@ -18,6 +19,9 @@ export interface Player {
   totalActions: number;
   attempts: number; // every submit_step, correct or not — used for accuracy
   currentNode: string; // server-tracked position; "" before the first round starts
+  linearItems?: LinearItem[];
+  linearStepIndex?: number;
+  linearRoundCompleted?: boolean;
 }
 
 export interface Room {
@@ -30,6 +34,7 @@ export interface Room {
   currentRoundData: unknown;
   matchEndTimer: NodeJS.Timeout | null;
   bstState?: BstMatchState;
+  linearRoundData?: LinearRound;
 }
 
 interface QueuedPlayer {
@@ -51,7 +56,16 @@ function generateCode(): string {
 }
 
 function newPlayer(socketId: string, userId?: string, username?: string): Player {
-  return { socketId, userId, username, score: 0, correctCount: 0, totalActions: 0, attempts: 0, currentNode: "" };
+  return {
+    socketId,
+    userId,
+    username,
+    score: 0,
+    correctCount: 0,
+    totalActions: 0,
+    attempts: 0,
+    currentNode: "",
+  };
 }
 
 export function createRoom(

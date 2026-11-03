@@ -21,6 +21,7 @@ interface DijkstraMatchEndResult {
   socketId: string;
   username: string | null;
   roundsCompleted: number;
+  correctCount: number;
   accuracy: number;
   xp: number;
 }
@@ -69,7 +70,7 @@ function toDijkstraPlayerResult(result: DijkstraMatchEndResult, label: string): 
   return {
     label,
     roundsCompleted: result.roundsCompleted,
-    correctCount: result.roundsCompleted,
+    correctCount: result.correctCount,
     accuracy: result.accuracy,
     xp: result.xp,
   };

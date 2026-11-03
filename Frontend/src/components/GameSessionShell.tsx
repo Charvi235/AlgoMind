@@ -31,6 +31,7 @@ import FloydWarshallBoard    from "./game-boards/FloydWarshallBoard";
 import MissingOperatorBoard  from "./game-boards/MissingOperatorBoard";
 import MathsQuestionsBoard   from "./game-boards/MathsQuestionsBoard";
 import SortingBoard          from "./game-boards/SortingBoard";
+import LinearStructureBoard from "./game-boards/LinearStructureBoard";
 
 type BoardComponent = React.ComponentType<{
   onRoundComplete?: (payload: RoundCompletePayload) => void;
@@ -46,6 +47,8 @@ const BOARD_MAP: Record<GameType, BoardComponent> = {
   "missing-operator": MissingOperatorBoard,
   "maths-questions":  MathsQuestionsBoard,
   "sorting":          SortingBoard,
+  "fifo":             LinearStructureBoard,
+  "lifo":             LinearStructureBoard,
 };
 
 // ─── Session constants ─────────────────────────────────────────────────────────
@@ -56,6 +59,8 @@ const MAX_SOLO_BST_ROUNDS = 4;
 const SESSION_SECONDS_BY_GAME: Partial<Record<GameType, number>> = {
   bst: 120,
   sorting: 420,   // sorting sessions get 5 extra minutes beyond the previous 2-minute limit
+  fifo: 90,
+  lifo: 90,
 };
 
 // ─── Session-end stats ─────────────────────────────────────────────────────────
@@ -177,11 +182,22 @@ export default function GameSessionShell({
     };
 
     const legacyHandler = ({ score }: { score: number }) => setOpponentScore(score);
+    const linearHandler = ({ players }: {
+      players?: Array<{ socketId: string; score: number }>;
+    }) => {
+      if (!players) return;
+      const me = players.find((player) => player.socketId === socket.id);
+      const opponent = players.find((player) => player.socketId !== socket.id);
+      if (me) setPlayerScore(me.score);
+      if (opponent) setOpponentScore(opponent.score);
+    };
     socket.on("bst_progress", handler);
     socket.on("opponent_progress", legacyHandler);
+    socket.on("linear_progress", linearHandler);
     return () => {
       socket.off("bst_progress", handler);
       socket.off("opponent_progress", legacyHandler);
+      socket.off("linear_progress", linearHandler);
     };
   }, [mode]);
   // ── Round-complete callback (called by the active Board) ──────────────────
@@ -205,7 +221,11 @@ export default function GameSessionShell({
     if (completed) {
       setCorrectTotal(nextCorrect);
       setTotalActions(nextTotal);
-      setPlayerScore((s) => s + (gameType === "sorting" ? 10 : payload.correctActions * 10));
+      setPlayerScore((s) => s + (
+        gameType === "sorting"
+          ? 10
+          : payload.score ?? payload.correctActions * 10
+      ));
     }
 
     if (gameType === "bst" && mode === "solo") {
@@ -352,7 +372,8 @@ export default function GameSessionShell({
       */}
       {timeLeft > 0 ? (
         <Board
-          key={boardKey}
+          key={`${gameType}:${mode}:${roomId ?? ""}:${boardKey}`}
+          gameType={gameType}
           round={round}
           mode={mode}
 
