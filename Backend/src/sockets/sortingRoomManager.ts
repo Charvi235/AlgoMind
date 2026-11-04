@@ -3,6 +3,7 @@ import type { SortRound } from "../utils/sortingEngine";
 
 export interface SortingPlayer {
   socketId: string;
+  userId: string;
   score: number;
   roundsCompleted: number;
   attempts: number;
@@ -18,7 +19,9 @@ export interface SortingRoom {
   round: number;
   players: SortingPlayer[];
   currentRound: SortRound | null;
+  startedAt?: Date;
   endTimer?: ReturnType<typeof setTimeout>;
+  roundAdvanceTimer?: ReturnType<typeof setTimeout>;
 }
 
 const rooms = new Map<string, SortingRoom>();
@@ -37,23 +40,29 @@ function generateCode(): string {
   return code;
 }
 
-function createRoom(firstSocketId: string, secondSocketId?: string): SortingRoom {
+function createRoom(
+  firstSocketId: string,
+  firstUserId: string,
+  secondPlayer?: { socketId: string; userId: string }
+): SortingRoom {
   const room: SortingRoom = {
     roomId: randomUUID(),
     code: generateCode(),
-    status: secondSocketId ? "active" : "waiting",
+    status: secondPlayer ? "active" : "waiting",
     round: 0,
-    players: [firstSocketId, secondSocketId]
-      .filter((socketId): socketId is string => Boolean(socketId))
-      .map((socketId) => ({
-        socketId,
-        score: 0,
-        roundsCompleted: 0,
-        attempts: 0,
-        correctActions: 0,
-        stepIndex: 0,
-        completedRound: false,
-      })),
+    players: [
+      { socketId: firstSocketId, userId: firstUserId },
+      ...(secondPlayer ? [secondPlayer] : []),
+    ].map(({ socketId, userId }) => ({
+      socketId,
+      userId,
+      score: 0,
+      roundsCompleted: 0,
+      attempts: 0,
+      correctActions: 0,
+      stepIndex: 0,
+      completedRound: false,
+    })),
     currentRound: null,
   };
   rooms.set(room.roomId, room);
@@ -62,13 +71,13 @@ function createRoom(firstSocketId: string, secondSocketId?: string): SortingRoom
   return room;
 }
 
-export function createSortingRoom(socketId: string): SortingRoom {
+export function createSortingRoom(socketId: string, userId: string): SortingRoom {
   removeFromQueue(socketId);
   removeSocketFromRoom(socketId);
-  return createRoom(socketId);
+  return createRoom(socketId, userId);
 }
 
-export function joinSortingRoom(code: string, socketId: string): SortingRoom | null {
+export function joinSortingRoom(code: string, socketId: string, userId: string): SortingRoom | null {
   const roomId = roomByCode.get(code.toUpperCase());
   const room = roomId ? rooms.get(roomId) : undefined;
   if (!room || room.status !== "waiting" || room.players.length !== 1) return null;
@@ -77,6 +86,7 @@ export function joinSortingRoom(code: string, socketId: string): SortingRoom | n
   removeSocketFromRoom(socketId);
   room.players.push({
     socketId,
+    userId,
     score: 0,
     roundsCompleted: 0,
     attempts: 0,
@@ -89,10 +99,16 @@ export function joinSortingRoom(code: string, socketId: string): SortingRoom | n
   return room;
 }
 
-export function createRandomSortingRoom(socketIds: [string, string]): SortingRoom {
+export function createRandomSortingRoom(
+  socketIds: [string, string],
+  userIds: [string, string]
+): SortingRoom {
   removeFromQueue(socketIds[0]);
   removeFromQueue(socketIds[1]);
-  return createRoom(socketIds[0], socketIds[1]);
+  return createRoom(socketIds[0], userIds[0], {
+    socketId: socketIds[1],
+    userId: userIds[1],
+  });
 }
 
 export function addToSortingQueue(socketId: string): string | null {
@@ -131,6 +147,7 @@ export function removeRoom(roomId: string): void {
   const room = rooms.get(roomId);
   if (!room) return;
   if (room.endTimer) clearTimeout(room.endTimer);
+  if (room.roundAdvanceTimer) clearTimeout(room.roundAdvanceTimer);
   roomByCode.delete(room.code);
   for (const player of room.players) roomBySocket.delete(player.socketId);
   rooms.delete(roomId);

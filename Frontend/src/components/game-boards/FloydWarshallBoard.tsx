@@ -121,12 +121,12 @@ export interface FloydWarshallBoardProps {
 // ─── Component ─────────────────────────────────────────────────────────────────
 export default function FloydWarshallBoard({
   mode = "solo",
-  round = 1,
-  sessionId,
+round = 1,
+sessionId,
   onWin,
   onReset,
-  onRoundComplete,
-  onRoundChange,
+ onRoundComplete,
+onRoundChange,
 }: FloydWarshallBoardProps) {
   // Generate ONE graph when this board mounts.
   const [graph, setGraph] = useState(() =>
@@ -298,7 +298,7 @@ onRoundChange?.(payload.round);
     socket.off("floyd_round_start", handleRoundState);
     socket.off("round_state", handleRoundState);
   };
-}, [mode]);
+}, [mode, onRoundChange]);
 useEffect(() => {
   if (mode !== "live") return;
 
