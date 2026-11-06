@@ -33,6 +33,13 @@ import {
   insertBstValue,
   type BSTNode,
 } from "../utils/bstGenerator";
+import {
+  applyLinearOperation,
+  generateLinearRound,
+  isLinearGameType,
+  publicLinearOperation,
+} from "../utils/linearStructureEngine";
+import type { LinearRound } from "../utils/linearStructureEngine";
 import User from "../models/User";
 import MatchResult from "../models/MatchResult";
 import GameSession from "../models/GameSession";
@@ -45,7 +52,7 @@ const BST_MAX_ROUNDS = 4;
 const GUEST_ROOM_GAMES = new Set(["bst"]);
 
 // Games that have a live (multiplayer) implementation on the server.
-const LIVE_GAMES = new Set(["dijkstra", "bst"]);
+const LIVE_GAMES = new Set(["dijkstra", "bst", "fifo", "lifo"]);
 
 export interface BstPlayerMatchState {
   socketId: string;
@@ -577,8 +584,46 @@ export function registerSocketHandlers(io: Server) {
     next();
   });
 
+  function emitLinearRoundState(socket: Socket, room: Room): void {
+    const roundData = room.linearRoundData;
+    const player = getPlayer(room, socket.id);
+    if (!roundData || !player || player.linearRoundCompleted) return;
+    const stepIndex = player.linearStepIndex ?? 0;
+    socket.emit("linear_round_state", {
+      roomId: room.roomId,
+      gameType: room.gameType,
+      round: room.round,
+      totalSteps: roundData.operations.length,
+      stepIndex,
+      items: player.linearItems ?? [],
+      step: publicLinearOperation(roundData.operations[stepIndex]),
+      completed: false,
+    });
+  }
+
+  function startLinearRound(room: Room, round: number): void {
+    if (!isLinearGameType(room.gameType)) return;
+    const roundData: LinearRound = generateLinearRound(room.gameType, round);
+    room.round = round;
+    room.linearRoundData = roundData;
+
+    for (const player of room.players) {
+      player.linearItems = roundData.initialItems.map((item) => ({ ...item }));
+      player.linearStepIndex = 0;
+      player.linearRoundCompleted = false;
+      const socket = io.sockets.sockets.get(player.socketId);
+      if (socket) emitLinearRoundState(socket, room);
+    }
+  }
+
   function startMatch(io: Server, room: Room) {
     room.status = "active";
+    if (isLinearGameType(room.gameType)) {
+      startLinearRound(room, 1);
+      room.matchEndTimer = setTimeout(() => { void endMatch(io, room); }, MATCH_SECONDS * 1000);
+      return;
+    }
+
     room.round = 1;
     const roundData = generateDijkstraRound(1);
     room.currentRoundData = roundData;
@@ -611,8 +656,9 @@ export function registerSocketHandlers(io: Server) {
       userId: p.userId,
       username: p.username ?? null,
       roundsCompleted: p.correctCount,
+      correctCount: p.totalActions,
       accuracy: p.attempts > 0 ? Math.round((p.totalActions / p.attempts) * 100) : 0,
-      xp: p.correctCount * 10,
+      xp: p.score,
     }));
 
     // Winner: more rounds wins; if rounds are equal, higher accuracy wins;
@@ -632,6 +678,7 @@ export function registerSocketHandlers(io: Server) {
         socketId: s.socketId,
         username: s.username,
         roundsCompleted: s.roundsCompleted,
+        correctCount: s.correctCount,
         accuracy: s.accuracy,
         xp: s.xp,
       })),
@@ -654,7 +701,7 @@ export function registerSocketHandlers(io: Server) {
           players: loggedIn.map((s) => ({
             user_id: s.userId!,
             username: s.username ?? "Unknown",
-            correctCount: s.roundsCompleted,
+            correctCount: s.correctCount,
             totalRounds: s.roundsCompleted,
             accuracy: s.accuracy,
             xpEarned: s.xp,
@@ -675,6 +722,8 @@ export function registerSocketHandlers(io: Server) {
             mode: "live" as const,
             status: "completed" as const,
             roundsCompleted: s.roundsCompleted,
+            attempts: room.players.find((player) => player.socketId === s.socketId)?.attempts ?? 0,
+            correctSteps: s.correctCount,
             accuracy: s.accuracy,
             xpEarned: s.xp,
             roomId: room.roomId,
@@ -695,11 +744,11 @@ export function registerSocketHandlers(io: Server) {
     // ── Random matchmaking ──────────────────────────────────────
     socket.on("join_queue", async (payload?: { gameType?: unknown }) => {
       const gameType = typeof payload?.gameType === "string" ? payload.gameType.toLowerCase() : "";
+      if (gameType === "sorting") return;
       if (socket.data.isGuest) {
         socket.emit("live_unavailable", { message: "Guests must use a room code for BST matches." });
         return;
       }
-      if (gameType === "sorting") return;
       if (!LIVE_GAMES.has(gameType)) {
         socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
         return;
@@ -723,6 +772,7 @@ export function registerSocketHandlers(io: Server) {
     // ── Invite code flow ────────────────────────────────────────
     socket.on("create_room", async (payload?: { gameType?: unknown; userId?: unknown }) => {
       const gameType = typeof payload?.gameType === "string" ? payload.gameType.toLowerCase() : "";
+      if (gameType === "sorting") return;
       const identityError = validateClientIdentity(socket, payload as Record<string, unknown> | undefined);
       if (identityError) {
         socket.emit("live_unavailable", { message: identityError });
@@ -732,7 +782,6 @@ export function registerSocketHandlers(io: Server) {
         socket.emit("live_unavailable", { message: "Guests can only create BST room-code matches." });
         return;
       }
-      if (gameType === "sorting") return;
       if (!LIVE_GAMES.has(gameType)) {
         socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
         return;
@@ -760,6 +809,7 @@ export function registerSocketHandlers(io: Server) {
     });
 
     socket.on("join_room", async (payload?: { code?: unknown; gameType?: unknown; userId?: unknown }) => {
+      if (payload?.gameType === "sorting") return;
       const gameType = typeof payload?.gameType === "string" ? payload.gameType.toLowerCase() : "";
       const identityError = validateClientIdentity(socket, payload as Record<string, unknown> | undefined);
       if (identityError) {
@@ -770,7 +820,6 @@ export function registerSocketHandlers(io: Server) {
         socket.emit("join_room_error", { message: "Guests can only join BST room-code matches." });
         return;
       }
-      if (payload?.gameType === "sorting") return;
       const code = typeof payload?.code === "string" ? payload.code.trim().toUpperCase() : "";
       if (!/^[A-Za-z0-9]{6}$/.test(code)) {
         socket.emit("join_room_error", { message: "Enter a valid 6-character room code." });
@@ -857,6 +906,95 @@ export function registerSocketHandlers(io: Server) {
         target: data.target,
       });
     });
+
+    socket.on("request_linear_state", () => {
+      const room = getRoomBySocket(socket.id);
+      if (!room || !isLinearGameType(room.gameType) || room.status !== "active") return;
+      emitLinearRoundState(socket, room);
+    });
+
+    socket.on(
+      "submit_linear_step",
+      (payload?: { stepIndex?: unknown; itemId?: unknown }) => {
+        const room = getRoomBySocket(socket.id);
+        const player = room && getPlayer(room, socket.id);
+        const roundData = room?.linearRoundData;
+        if (
+          !room ||
+          room.status !== "active" ||
+          !isLinearGameType(room.gameType) ||
+          !player ||
+          !roundData ||
+          player.linearRoundCompleted
+        ) return;
+
+        const stepIndex = player.linearStepIndex ?? 0;
+        if (payload?.stepIndex !== stepIndex) {
+          emitLinearRoundState(socket, room);
+          return;
+        }
+        const itemId = payload.itemId;
+        if (itemId !== undefined && (typeof itemId !== "number" || !Number.isSafeInteger(itemId))) {
+          socket.emit("linear_step_result", {
+            correct: false,
+            roomId: room.roomId,
+            error: "Select a valid item.",
+          });
+          return;
+        }
+
+        const operation = roundData.operations[stepIndex];
+        if (!operation) return;
+        player.attempts += 1;
+        const result = applyLinearOperation(
+          room.gameType,
+          player.linearItems ?? [],
+          operation,
+          itemId as number | undefined
+        );
+        const nextStepIndex = result.correct ? stepIndex + 1 : stepIndex;
+        const completed = result.correct && nextStepIndex >= roundData.operations.length;
+        if (result.correct) {
+          player.totalActions += 1;
+          player.score += 10;
+
+          for (const roomPlayer of room.players) {
+            roomPlayer.linearItems = result.items.map((item) => ({ ...item }));
+            roomPlayer.linearStepIndex = nextStepIndex;
+            roomPlayer.linearRoundCompleted = completed;
+            if (completed) roomPlayer.correctCount += 1;
+          }
+        }
+
+        const stepResult = {
+          correct: result.correct,
+          roomId: room.roomId,
+          gameType: room.gameType,
+          round: room.round,
+          totalSteps: roundData.operations.length,
+          stepIndex: nextStepIndex,
+          items: player.linearItems ?? [],
+          step: completed
+            ? null
+            : publicLinearOperation(roundData.operations[nextStepIndex]),
+          completed,
+          waitingForOpponent: false,
+        };
+        if (result.correct) io.to(room.roomId).emit("linear_step_result", stepResult);
+        else socket.emit("linear_step_result", stepResult);
+
+        io.to(room.roomId).emit("linear_progress", {
+          roomId: room.roomId,
+          players: room.players.map((entry) => ({
+            socketId: entry.socketId,
+            score: entry.score,
+            correctCount: entry.correctCount,
+          })),
+        });
+
+        if (completed) startLinearRound(room, room.round + 1);
+      }
+    );
 
     // ── Gameplay ─────────────────────────────────────────────────
     socket.on(

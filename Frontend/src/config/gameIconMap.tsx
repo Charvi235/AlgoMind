@@ -6,6 +6,8 @@ import {
   Calculator,
   Brain,
   ArrowUpDown,
+  ListOrdered,
+  Layers,
   type LucideIcon,
 } from "lucide-react";
 
@@ -16,4 +18,6 @@ export const gameIconMap: Record<string, LucideIcon> = {
   Calculator,
   Brain,
   ArrowUpDown,
+  ListOrdered,
+  Layers,
 };

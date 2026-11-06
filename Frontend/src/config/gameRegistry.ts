@@ -5,7 +5,9 @@ export type GameType =
   | "floyd-warshall"
   | "missing-operator"
   | "maths-questions"
-  | "sorting";
+  | "sorting"
+  | "fifo"
+  | "lifo";
 
 export interface GameRegistryEntry {
   /** Human-readable title shown in headings and cards */
@@ -55,6 +57,18 @@ export const gameRegistry: Record<GameType, GameRegistryEntry> = {
     iconName:    "ArrowUpDown",
     routeKey:    "sorting",
   },
+  fifo: {
+    title:       "Queue Rush",
+    description: "Keep the line moving: enqueue and serve in first-in, first-out order",
+    iconName:    "ListOrdered",
+    routeKey:    "fifo",
+  },
+  lifo: {
+    title:       "Stack Strike",
+    description: "Beat the stack: push and pop in last-in, first-out order",
+    iconName:    "Layers",
+    routeKey:    "lifo",
+  },
 } as const;
 
 /**
@@ -67,6 +81,8 @@ export const gameRegistryList: GameRegistryEntry[] = [
   gameRegistry["missing-operator"],
   gameRegistry["maths-questions"],
   gameRegistry["sorting"],
+  gameRegistry["fifo"],
+  gameRegistry["lifo"],
 ];
 
 /**
@@ -79,6 +95,8 @@ export function isGameType(value: string | undefined): value is GameType {
     value === "floyd-warshall" ||
     value === "missing-operator" ||
     value === "maths-questions" ||
-    value === "sorting"
+    value === "sorting" ||
+    value === "fifo" ||
+    value === "lifo"
   );
 }

@@ -89,6 +89,7 @@ export default function SortingBoard({
   const [reload, setReload] = useState(0);
   const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reported = useRef(false);
+  const activeRoundNumber = useRef<number | null>(null);
 
   useEffect(() => {
     if (mode === "live") return;
@@ -129,9 +130,12 @@ export default function SortingBoard({
       step: ActiveSortRound["step"];
       completed: boolean;
       finalArr?: ActiveSortRound["finalArr"];
+      stale?: boolean;
     }) => {
       if (data.roomId !== roomId) return;
-      reported.current = false;
+      const isNewRound = activeRoundNumber.current !== data.round;
+      activeRoundNumber.current = data.round;
+      if (isNewRound) reported.current = false;
       setLoadError(null);
       setGame({
         roundId: roomId,
@@ -144,8 +148,10 @@ export default function SortingBoard({
       });
       setLoading(false);
       setValidating(false);
-      setErrorIdx([]);
-      setMistakes(0);
+      if (isNewRound) {
+        setErrorIdx([]);
+        setMistakes(0);
+      }
       onRoundChange?.(data.round);
     };
     const handleSocketError = ({ message }: { message: string }) => {
@@ -211,6 +217,7 @@ export default function SortingBoard({
         step: ActiveSortRound["step"];
         completed: boolean;
         finalArr?: ActiveSortRound["finalArr"];
+        stale?: boolean;
       }) => {
         socket.off("sorting_step_result", onResult);
         clearTimeout(timeout);
@@ -226,7 +233,8 @@ export default function SortingBoard({
           completed: result.completed,
           finalArr: result.finalArr,
         });
-        if (!result.correct) flashError(step.focus);
+        if (result.stale) setErrorIdx([]);
+        else if (!result.correct) flashError(step.focus);
         else setErrorIdx([]);
       };
       const timeout = setTimeout(() => {
@@ -235,7 +243,7 @@ export default function SortingBoard({
         setLoadError("The server did not respond. Please try that step again.");
       }, 5000);
       socket.on("sorting_step_result", onResult);
-      socket.emit("submit_sorting_step", { answer });
+      socket.emit("submit_sorting_step", { answer, stepIndex: game.stepIndex });
       return;
     }
     try {
@@ -337,6 +345,11 @@ export default function SortingBoard({
             avg. time {info.complexity} · step {Math.min(game.stepIndex + 1, total)}/{total}
           </span>
         </div>
+        {mode === "live" && (
+          <p className="text-xs text-teal">
+            Shared board — moves by either player advance both views.
+          </p>
+        )}
         <div className="h-1.5 w-full rounded-full bg-panelBorder/40 overflow-hidden" aria-hidden="true">
           <motion.div
             className="h-full rounded-full bg-teal"
