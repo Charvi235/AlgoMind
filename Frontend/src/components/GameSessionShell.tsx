@@ -28,8 +28,6 @@ import { socket } from "../lib/socket";
 import DijkstraBoard         from "./game-boards/DijkstraBoard";
 import BSTBoard              from "./game-boards/BSTBoard";
 import FloydWarshallBoard    from "./game-boards/FloydWarshallBoard";
-import MissingOperatorBoard  from "./game-boards/MissingOperatorBoard";
-import MathsQuestionsBoard   from "./game-boards/MathsQuestionsBoard";
 import SortingBoard          from "./game-boards/SortingBoard";
 import LinearStructureBoard from "./game-boards/LinearStructureBoard";
 
@@ -44,8 +42,6 @@ const BOARD_MAP: Record<GameType, BoardComponent> = {
   "dijkstra":         DijkstraBoard,
   "bst":              BSTBoard,
   "floyd-warshall":   FloydWarshallBoard,
-  "missing-operator": MissingOperatorBoard,
-  "maths-questions":  MathsQuestionsBoard,
   "sorting":          SortingBoard,
   "fifo":             LinearStructureBoard,
   "lifo":             LinearStructureBoard,
@@ -59,8 +55,8 @@ const MAX_SOLO_BST_ROUNDS = 4;
 const SESSION_SECONDS_BY_GAME: Partial<Record<GameType, number>> = {
   bst: 120,
   sorting: 420,   // sorting sessions get 5 extra minutes beyond the previous 2-minute limit
-  fifo: 90,
-  lifo: 90,
+  fifo: 60,
+  lifo: 60,
 };
 
 // ─── Session-end stats ─────────────────────────────────────────────────────────
@@ -152,20 +148,35 @@ export default function GameSessionShell({
   // ── Session end — a separate effect, so the parent's onSessionEnd
   // (which navigates / sets state) never runs inside a state updater ──────
   useEffect(() => {
-    if (gameType === "bst" && mode === "solo") return;
-    if (timeLeft > 0) return;
-    const { round: r, correctTotal: c, totalActions: tot, attempts: attemptsCount, earnedXp: xp, matchIds: ids } = statsRef.current;
-    const accuracyDenominator = attemptsCount > 0 ? attemptsCount : tot;
-    const accuracy = accuracyDenominator > 0 ? Math.round((c / accuracyDenominator) * 100) : 0;
-    sessionEndRef.current({
-      roundsCompleted: r - 1,
-      correctCount:    c,
-      totalCount:      tot,
-      accuracy,
-      xp,
-      matchIds: ids,
-    });
-  }, [timeLeft, gameType, mode]);
+  if (gameType === "bst" && mode === "solo") return;
+  if (timeLeft > 0 || sessionEndedRef.current) return;
+
+  sessionEndedRef.current = true;
+
+  const {
+    round: r,
+    correctTotal: c,
+    totalActions: tot,
+    attempts: attemptsCount,
+    earnedXp: xp,
+    matchIds: ids,
+  } = statsRef.current;
+
+  const accuracyDenominator = attemptsCount > 0 ? attemptsCount : tot;
+  const accuracy =
+    accuracyDenominator > 0
+      ? Math.round((c / accuracyDenominator) * 100)
+      : 0;
+
+  sessionEndRef.current({
+    roundsCompleted: r - 1,
+    correctCount: c,
+    totalCount: tot,
+    accuracy,
+    xp,
+    matchIds: ids,
+  });
+}, [timeLeft, gameType, mode]);
 
   // ── Opponent live score (real Socket.io events) ──────────────────
   useEffect(() => {

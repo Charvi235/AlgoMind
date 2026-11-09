@@ -248,23 +248,29 @@ Guest names are sanitized by the server. Guests may create and join BST room-cod
 
 Room codes are six characters. A room accepts at most two players. A player already in the room cannot join it again.
 
+
 ### 5.3 Random Matchmaking
 
 Authenticated users can enter the BST matchmaking queue:
+
 
 ```js
 socket.emit("join_queue", { gameType: "bst" });
 ```
 
+
 The server emits `queue_joined` while waiting. When an opponent is found, both clients receive `matched`, followed by the game-start event. To leave a queue:
+
 
 ```js
 socket.emit("cancel_queue", { gameType: "bst" });
 ```
 
+
 ### 5.4 Submit a Move
 
 **Client event: `bst_submit_move`**
+
 
 ```js
 socket.emit("bst_submit_move", {

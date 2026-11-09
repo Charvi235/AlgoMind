@@ -32,13 +32,7 @@ const C = {
 
 const INF = Infinity;
 
-interface Step {
-  k: number;
-  i: number;
-  j: number;
-  newValue: number;
-  matrixSnapshot: number[][];
-}
+
 
 type CellFlash = "correct" | "error" | null;
 
@@ -101,43 +95,7 @@ function createInitialDistanceMatrix(
 
 // ─── Floyd-Warshall Steps ─────────────────────────────────────────────────────
 
-function computeAllSteps(
-  initial: number[][]
-): Step[] {
-  const dist = clone2D(initial);
-  const steps: Step[] = [];
 
-  const n = dist.length;
-
-  for (let k = 0; k < n; k++) {
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-
-        if (i === j) continue;
-
-        const via =
-          dist[i][k] === INF ||
-          dist[k][j] === INF
-            ? INF
-            : dist[i][k] + dist[k][j];
-
-        if (via < dist[i][j]) {
-          dist[i][j] = via;
-
-          steps.push({
-            k,
-            i,
-            j,
-            newValue: via,
-            matrixSnapshot: clone2D(dist),
-          });
-        }
-      }
-    }
-  }
-
-  return steps;
-}
 
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -146,6 +104,7 @@ function computeAllSteps(
 export interface FloydWarshallBoardProps {
   mode?: "solo" | "live";
   round?: number;
+  sessionId?: string;
   onWin?: (seconds: number, score: number) => void;
   onReset?: () => void;
 
@@ -162,16 +121,85 @@ export interface FloydWarshallBoardProps {
 // ─── Component ─────────────────────────────────────────────────────────────────
 export default function FloydWarshallBoard({
   mode = "solo",
-  round: _round = 1,
+round = 1,
+sessionId,
   onWin,
   onReset,
-  onRoundComplete,
-  onRoundChange: _onRoundChange,
+ onRoundComplete,
+onRoundChange,
 }: FloydWarshallBoardProps) {
   // Generate ONE graph when this board mounts.
   const [graph, setGraph] = useState(() =>
     generateFloydWarshallGraph()
   );
+  const [graphId, setGraphId] = useState<string | null>(null);
+const [loadingGraph, setLoadingGraph] = useState(false);
+const [graphReloadKey, setGraphReloadKey] = useState(0);
+const [soloCurrentStep, setSoloCurrentStep] = useState<{
+  k: number;
+  i: number;
+  j: number;
+} | null>(null);
+
+const [soloTotalSteps, setSoloTotalSteps] = useState(0);
+useEffect(() => {
+  if (mode !== "solo" || !sessionId) return;
+
+  const fetchGraph = async () => {
+    try {
+      setLoadingGraph(true);
+
+      const token = getToken();
+
+      if (!token) {
+        throw new Error("Authentication token not found");
+      }
+
+      const response = await fetch(
+        `http://localhost:5000/api/games/floyd-warshall/new?sessionId=${sessionId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to generate Floyd-Warshall graph");
+      }
+
+      const data = await response.json();
+
+      setGraph((prev) => ({
+        ...prev,
+        nodes: data.nodes,
+        edges: data.edges,
+        start: data.start,
+        target: data.target,
+      }));
+
+      setGraphId(data.graphId);
+      setSoloCurrentStep(data.currentStep);
+setSoloTotalSteps(data.totalSteps);
+      const initialMatrix = data.initialMatrix.map(
+        (row: (number | null)[]) =>
+          row.map((value) => value === null ? INF : value)
+      );
+
+      setMatrix(initialMatrix);
+      setStepIdx(0);
+      setInputVal("");
+      setConfirmed(new Set());
+      setWon(false);
+    } catch (error) {
+      console.error("Floyd-Warshall graph error:", error);
+    } finally {
+      setLoadingGraph(false);
+    }
+  };
+
+  void fetchGraph();
+}, [mode, sessionId,graphReloadKey]);
 
   // Create labels from the generated graph.
   const LABELS = useMemo(
@@ -192,10 +220,6 @@ export default function FloydWarshallBoard({
   );
 
   // Calculate all Floyd-Warshall updates.
-  const allSteps = useMemo(
-    () => computeAllSteps(INITIAL_DIST),
-    [INITIAL_DIST]
-  );
 
   const [matrix, setMatrix] = useState<number[][]>(() =>
     clone2D(INITIAL_DIST)
@@ -211,7 +235,7 @@ export default function FloydWarshallBoard({
 } | null>(null);
 
 const [liveTotalSteps, setLiveTotalSteps] = useState(0);
-
+const [liveRound, setLiveRound] = useState(round);
   const [cellFlash, setCellFlash] =
     useState<CellFlash>(null);
 
@@ -223,7 +247,7 @@ const [liveTotalSteps, setLiveTotalSteps] = useState(0);
   const [running, setRunning] = useState(true);
 
   const [won, setWon] = useState(false);
-
+const [submitting, setSubmitting] = useState(false);
   const inputRef =
     useRef<HTMLInputElement>(null);
 
@@ -231,6 +255,7 @@ useEffect(() => {
   if (mode !== "live") return;
 
   const handleRoundState = (payload: {
+    round: number;
     nodes: { id: string; label: string }[];
     edges: { source: string; target: string; weight: number }[];
     start: string;
@@ -244,9 +269,15 @@ useEffect(() => {
       edges: payload.edges,
       start: payload.start,
       target: payload.target,
-    });
-
-    setMatrix(payload.initialMatrix.map((row) => [...row]));
+    }
+  );
+setLiveRound(payload.round);
+onRoundChange?.(payload.round);
+   setMatrix(
+  payload.initialMatrix.map((row) =>
+    row.map((value) => value === null ? Infinity : value)
+  )
+);
     setLiveTotalSteps(payload.totalSteps);
     setLiveCurrentStep(payload.currentStep ?? null);
     setStepIdx(0);
@@ -257,28 +288,34 @@ useEffect(() => {
   };
 
   socket.on("match_start", handleRoundState);
+  socket.on("floyd_round_start", handleRoundState);
   socket.on("round_state", handleRoundState);
 
   socket.emit("request_round_state");
 
   return () => {
     socket.off("match_start", handleRoundState);
+    socket.off("floyd_round_start", handleRoundState);
     socket.off("round_state", handleRoundState);
   };
-}, [mode]);
+}, [mode, onRoundChange]);
 useEffect(() => {
   if (mode !== "live") return;
 
   const handleAnswerResult = (payload: {
     correct: boolean;
-    matrix: number[][];
+   matrix: (number | null)[][];
     stepIndex: number;
     totalSteps: number;
     currentStep: { k: number; i: number; j: number } | null;
     completed: boolean;
     score: number;
   }) => {
-    setMatrix(payload.matrix.map((row) => [...row]));
+    setMatrix(
+  payload.matrix.map((row) =>
+    row.map((value) => value === null ? Infinity : value)
+  )
+);
     setLiveCurrentStep(payload.currentStep);
     setLiveTotalSteps(payload.totalSteps);
     setStepIdx(payload.stepIndex);
@@ -318,19 +355,25 @@ useEffect(() => {
 }, [mode, liveCurrentStep, onWin, onRoundComplete, seconds]);
   // ─── Current Step ───────────────────────────────────────────────────────────
 
- const currentStep = mode === "live"
-  ? liveCurrentStep
-    ? {
-        ...liveCurrentStep,
-        newValue: 0,
-        matrixSnapshot: matrix,
-      }
-    : null
-  : allSteps[stepIdx] ?? null;
+ const currentStep =
+  mode === "live"
+    ? liveCurrentStep
+      ? {
+          ...liveCurrentStep,
+          newValue: 0,
+          matrixSnapshot: matrix,
+        }
+      : null
+    : soloCurrentStep
+      ? {
+          ...soloCurrentStep,
+          newValue: 0,
+          matrixSnapshot: matrix,
+        }
+      : null;
 
-const totalSteps = mode === "live"
-  ? liveTotalSteps
-  : allSteps.length;
+const totalSteps =
+  mode === "live" ? liveTotalSteps : soloTotalSteps;
 
 
   // ─── Timer ──────────────────────────────────────────────────────────────────
@@ -357,9 +400,9 @@ const totalSteps = mode === "live"
 
   // ─── Submit Answer ──────────────────────────────────────────────────────────
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
 
-    if (!currentStep || won) return;
+   if (!currentStep || won || submitting) return;
 
    if (mode === "live") {
   const trimmed = inputVal.trim();
@@ -378,109 +421,102 @@ const totalSteps = mode === "live"
   return;
 }
 
-const parsed =
-  inputVal.trim() === "∞" ||
-  inputVal.trim().toLowerCase() === "inf"
-    ? INF
-    : Number(inputVal.trim());
+const trimmed = inputVal.trim();
 
-if (isNaN(parsed)) return;
+if (!trimmed) return;
 
-const correct =
-  parsed === currentStep.newValue;
-    if (correct) {
+const parsed = Number(trimmed);
 
-      setMatrix(
-        currentStep.matrixSnapshot
-      );
+if (!Number.isFinite(parsed) || !graphId || !soloCurrentStep) {
+  return;
+}
 
-      setConfirmed((prev) =>
-        new Set(
-          prev
-        ).add(
-          `${currentStep.i}-${currentStep.j}`
-        )
-      );
+const token = getToken();
 
-      setCellFlash("correct");
-
-      setTimeout(
-        () => setCellFlash(null),
-        600
-      );
-
-      setInputVal("");
-
-      const next = stepIdx + 1;
-
-  
-if (next >= totalSteps) {
-  setWon(true);
-  setRunning(false);
-
-  const finalScore = next * 10;
-
-  onWin?.(seconds, finalScore);
-
-  onRoundComplete?.({
-    correctActions: next,
-    totalActions: totalSteps,
-  });
-
-  const token = getToken();
-
-  if (token) {
-    fetch("http://localhost:5000/api/games/floyd-warshall/solo", {
+if (!token) {
+  console.error("Authentication token not found");
+  return;
+}
+setSubmitting(true);
+try {
+  const response = await fetch(
+    "http://localhost:5000/api/games/floyd-warshall/validate-answer",
+    {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        score: finalScore,
-        completed: true,
+        graphId,
+        answer: parsed,
       }),
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          const error = await response.text();
-          throw new Error(error || "Failed to save game result");
-        }
-        console.log("Solo Floyd-Warshall result saved");
-      })
-      .catch((error) => {
-        console.error("Failed to save Solo Floyd-Warshall result:", error);
-      });
-  } else {
-    console.warn("No login token found; result was not saved.");
-  }
-}
-else {
-
-        setStepIdx(next);
-      }
-
-    } else {
-
-      setCellFlash("error");
-
-      setTimeout(
-        () => setCellFlash(null),
-        600
-      );
     }
+  );
 
-  }, [
-    currentStep,
-    inputVal,
-    stepIdx,
-    totalSteps,
-    won,
-    seconds,
-    onWin,
-    onRoundComplete,
-  ]);
+  const data = await response.json();
 
+  if (!response.ok) {
+    throw new Error(data.error || "Answer validation failed");
+  }
+
+  if (!data.correct) {
+    setCellFlash("error");
+    setTimeout(() => setCellFlash(null), 600);
+    return;
+  }
+
+  const { i, j } = soloCurrentStep;
+
+  setMatrix((prev) => {
+    const updated = clone2D(prev);
+    updated[i][j] = parsed;
+    return updated;
+  });
+
+  setConfirmed((prev) => {
+    const next = new Set(prev);
+    next.add(`${i}-${j}`);
+    return next;
+  });
+
+  setCellFlash("correct");
+  setTimeout(() => setCellFlash(null), 600);
+
+  setInputVal("");
+  setStepIdx(data.stepIndex);
+  setSoloCurrentStep(data.currentStep);
+
+  if (data.isComplete) {
+    setWon(true);
+    setRunning(false);
+
+    const finalScore = data.totalSteps * 10;
+
+    onWin?.(seconds, finalScore);
+
+    onRoundComplete?.({
+      correctActions: data.totalSteps,
+      totalActions: data.totalSteps,
+    });
+  }
+} catch (error) {
+  console.error("Floyd-Warshall validation error:", error);
+} finally {
+  setSubmitting(false);
+}
+}, [
+  currentStep,
+  inputVal,
+   submitting,
+  won,
+  mode,
+  graphId,
+  soloCurrentStep,
+  seconds,
+  onWin,
+  onRoundComplete,
+]);
 
   // ─── Enter Key ──────────────────────────────────────────────────────────────
 
@@ -496,24 +532,26 @@ else {
   // ─── Reset ──────────────────────────────────────────────────────────────────
 
   const handleReset = useCallback(() => {
-
-    // Generate a NEW graph on reset
-    const newGraph =
-      generateFloydWarshallGraph();
-
+  if (mode === "solo") {
+    setGraphId(null);
+    setSoloCurrentStep(null);
+    setSoloTotalSteps(0);
+    setGraphReloadKey((prev) => prev + 1);
+  } else {
+    const newGraph = generateFloydWarshallGraph();
     setGraph(newGraph);
+  }
 
-    setStepIdx(0);
-    setInputVal("");
-    setCellFlash(null);
-    setConfirmed(new Set());
-    setSeconds(0);
-    setRunning(true);
-    setWon(false);
+  setStepIdx(0);
+  setInputVal("");
+  setCellFlash(null);
+  setConfirmed(new Set());
+  setSeconds(0);
+  setRunning(true);
+  setWon(false);
 
-    onReset?.();
-
-  }, [onReset]);
+  onReset?.();
+}, [onReset, mode]);
 
 
   // ─── Cell Styling ───────────────────────────────────────────────────────────
@@ -612,7 +650,13 @@ else {
 
 
   // ─── Render ─────────────────────────────────────────────────────────────────
-
+if (loadingGraph) {
+  return (
+    <div className="flex items-center justify-center min-h-[300px] text-textMuted">
+      Loading Floyd-Warshall graph...
+    </div>
+  );
+}
   return (
     <div className="flex flex-col gap-6">
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
@@ -1402,6 +1446,7 @@ else {
           <Button
             variant="primary"
             onClick={handleSubmit}
+            disabled={submitting}
             className="!px-4 !py-2 text-sm"
           >
             Confirm value

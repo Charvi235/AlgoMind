@@ -3,8 +3,6 @@ export type GameType =
   | "dijkstra"
   | "bst"
   | "floyd-warshall"
-  | "missing-operator"
-  | "maths-questions"
   | "sorting"
   | "fifo"
   | "lifo";
@@ -39,18 +37,6 @@ export const gameRegistry: Record<GameType, GameRegistryEntry> = {
     iconName:    "Grid3x3",
     routeKey:    "floyd-warshall",
   },
-  "missing-operator": {
-    title:       "Missing Operator",
-    description: "Find the operator that makes it true",
-    iconName:    "Calculator",
-    routeKey:    "missing-operator",
-  },
-  "maths-questions": {
-    title:       "Interesting Maths Questions",
-    description: "Solve curated logic puzzles",
-    iconName:    "Brain",
-    routeKey:    "maths-questions",
-  },
   sorting: {
     title:       "Sorting Showdown",
     description: "Sort the bars by hand — bubble, insertion, selection, merge, quick & heap",
@@ -78,8 +64,6 @@ export const gameRegistryList: GameRegistryEntry[] = [
   gameRegistry["dijkstra"],
   gameRegistry["bst"],
   gameRegistry["floyd-warshall"],
-  gameRegistry["missing-operator"],
-  gameRegistry["maths-questions"],
   gameRegistry["sorting"],
   gameRegistry["fifo"],
   gameRegistry["lifo"],
@@ -93,8 +77,6 @@ export function isGameType(value: string | undefined): value is GameType {
     value === "dijkstra" ||
     value === "bst" ||
     value === "floyd-warshall" ||
-    value === "missing-operator" ||
-    value === "maths-questions" ||
     value === "sorting" ||
     value === "fifo" ||
     value === "lifo"

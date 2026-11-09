@@ -33,6 +33,12 @@ export interface Room {
   round: number;
   currentRoundData: unknown;
   matchEndTimer: NodeJS.Timeout | null;
+  floydWarshallState?: {
+  playerProgress: Map<string, {
+    currentStep: number;
+    matrix: number[][];
+  }>;
+};
   bstState?: BstMatchState;
   linearRoundData?: LinearRound;
 }

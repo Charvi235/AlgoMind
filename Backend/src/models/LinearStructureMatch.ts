@@ -9,6 +9,8 @@ export interface ILinearStructureMatch extends Document {
   challengeId: string;
   gameType: LinearGameType;
   round: number;
+  userId: mongoose.Types.ObjectId;
+  sessionId: mongoose.Types.ObjectId;
   initialItems: LinearItem[];
   items: LinearItem[];
   operations: LinearOperation[];
@@ -39,6 +41,16 @@ const LinearStructureMatchSchema = new Schema<ILinearStructureMatch>({
   challengeId: { type: String, required: true, unique: true },
   gameType: { type: String, enum: ["fifo", "lifo"], required: true },
   round: { type: Number, required: true },
+  userId: {
+    type: Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  sessionId: {
+    type: Schema.Types.ObjectId,
+    ref: "GameSession",
+    required: true,
+  },
   initialItems: { type: [ItemSchema], required: true },
   items: { type: [ItemSchema], required: true },
   operations: { type: [OperationSchema], required: true },

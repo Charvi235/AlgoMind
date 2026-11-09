@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, CheckCircle2, Layers, ListOrdered, Loader2, RotateC
 import { socket } from "../../lib/socket";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
-
+import { getToken } from "../../lib/auth";
 type LinearGameType = "fifo" | "lifo";
 type StructureItem = { id: number; value: number };
 type StructureStep =
@@ -33,6 +33,7 @@ interface SoloStepResult extends ChallengeState {
 interface LinearStructureBoardProps {
   gameType?: LinearGameType;
   round?: number;
+  sessionId?: string;
   mode?: "solo" | "live";
   roomId?: string;
   onRoundChange?: (round: number) => void;
@@ -49,14 +50,40 @@ const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
 async function fetchChallenge(
   gameType: LinearGameType,
   round: number,
-  requestId: string
+  requestId: string,
+  sessionId: string,
 ): Promise<ChallengeState> {
-  const query = new URLSearchParams({ gameType, round: String(round), requestId });
-  const response = await fetch(`${API_BASE}/api/games/linear-structures/new?${query}`);
-  const body = await response.json().catch(() => null) as ChallengeState | { error?: string } | null;
-  if (!response.ok || !body || !("challengeId" in body)) {
-    throw new Error(body && "error" in body ? body.error ?? "Could not load challenge." : "Could not load challenge.");
+  const query = new URLSearchParams({
+    gameType,
+    round: String(round),
+    requestId,
+    sessionId,
+  });
+
+const token = getToken();
+
+const response = await fetch(
+  `${API_BASE}/api/games/linear-structures/new?${query}`,
+  {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
   }
+);
+
+  const body = await response.json().catch(() => null) as
+    | ChallengeState
+    | { error?: string }
+    | null;
+
+  if (!response.ok || !body || !("challengeId" in body)) {
+    throw new Error(
+      body && "error" in body
+        ? body.error ?? "Could not load challenge."
+        : "Could not load challenge."
+    );
+  }
+
   return body;
 }
 
@@ -64,9 +91,14 @@ async function submitSoloStep(
   challenge: ChallengeState,
   itemId?: number
 ): Promise<SoloStepResult> {
-  const response = await fetch(`${API_BASE}/api/games/linear-structures/validate-step`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+  const token = getToken();
+
+const response = await fetch(`${API_BASE}/api/games/linear-structures/validate-step`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  },
     body: JSON.stringify({
       challengeId: challenge.challengeId,
       stepIndex: challenge.stepIndex,
@@ -86,6 +118,7 @@ async function submitSoloStep(
 export default function LinearStructureBoard({
   gameType = "fifo",
   round = 1,
+  sessionId,
   mode = "solo",
   roomId,
   onRoundChange,
@@ -104,21 +137,39 @@ export default function LinearStructureBoard({
 
   useEffect(() => {
     reportedRound.current = null;
+if (mode === "solo") {
+  let cancelled = false;
 
-    if (mode === "solo") {
-      let cancelled = false;
-      fetchChallenge(gameType, round, requestId.current)
-        .then((result) => {
-          if (!cancelled) setChallenge(result);
-        })
-        .catch((error: unknown) => {
-          if (!cancelled) setLoadError(error instanceof Error ? error.message : "Could not load challenge.");
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-      return () => { cancelled = true; };
-    }
+  if (!sessionId) {
+    setLoadError("Session ID is missing. Please restart the game.");
+    setLoading(false);
+    return;
+  }
+
+  setLoading(true);
+  setLoadError(null);
+
+  fetchChallenge(gameType, round, requestId.current, sessionId)
+    .then((result) => {
+      if (!cancelled) setChallenge(result);
+    })
+    .catch((error: unknown) => {
+      if (!cancelled) {
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Could not load challenge."
+        );
+      }
+    })
+    .finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+  return () => {
+    cancelled = true;
+  };
+}
 
     const handleRoundState = (state: ChallengeState & { roomId: string }) => {
       if (state.roomId !== roomId || state.gameType !== gameType) return;
@@ -170,7 +221,7 @@ export default function LinearStructureBoard({
       socket.off("linear_round_state", handleRoundState);
       socket.off("linear_step_result", handleStepResult);
     };
-  }, [gameType, mode, onRoundChange, onRoundComplete, retry, roomId, round]);
+  }, [gameType, mode, onRoundChange, onRoundComplete, retry, roomId, round,sessionId,]);
 
   const submitAction = useCallback(async (itemId?: number) => {
     if (!challenge || !challenge.step || submitting || challenge.completed) return;
@@ -218,6 +269,7 @@ export default function LinearStructureBoard({
   const isQueue = gameType === "fifo";
   const StructureIcon = isQueue ? ListOrdered : Layers;
   const orderedItems = challenge?.items ?? [];
+  const topItem = !isQueue ? orderedItems[orderedItems.length - 1] : null;
   const isEmpty = orderedItems.length === 0;
   const progress = challenge ? Math.round((challenge.stepIndex / challenge.totalSteps) * 100) : 0;
 
@@ -325,13 +377,15 @@ export default function LinearStructureBoard({
           </div>
         )}
 
-        <div
-          className={[
-            "relative flex min-h-36 items-center justify-center gap-3 rounded-xl border border-dashed border-panelBorder bg-background/70 p-5",
-            "flex-wrap",
-          ].join(" ")}
-          aria-label={isQueue ? "Queue contents" : "Stack contents"}
-        >
+       <div
+  className={[
+    "relative flex min-h-36 items-center justify-center gap-3 rounded-xl border border-dashed border-panelBorder bg-background/70 p-5",
+    isQueue
+      ? "flex-row flex-wrap"
+      : "flex-col-reverse flex-nowrap",
+  ].join(" ")}
+  aria-label={isQueue ? "Queue contents" : "Stack contents"}
+>
           <AnimatePresence mode="popLayout">
             {orderedItems.map((item, index) => {
               const isFront = isQueue && index === 0;
@@ -349,17 +403,17 @@ export default function LinearStructureBoard({
                   exit={{ opacity: 0, scale: 0.7, y: isQueue ? 0 : -20 }}
                   className="flex flex-col items-center gap-1"
                 >
-                  {(isFront || isRear || isTop) && (
-                    <span className="min-h-4 whitespace-nowrap text-[9px] font-bold uppercase tracking-widest text-teal">
-                      {isFront && isRear
-                        ? `FRONT / REAR · ${item.value}`
-                        : isFront
-                          ? `FRONT · ${item.value}`
-                          : isRear
-                            ? `REAR · ${item.value}`
-                            : `TOP · ${item.value}`}
-                    </span>
-                  )}
+                 {(isFront || isRear || isTop) && (
+  <span className="min-h-4 whitespace-nowrap text-[9px] font-bold uppercase tracking-widest text-teal">
+    {isFront && isRear
+      ? "FRONT / REAR"
+      : isFront
+        ? "FRONT"
+        : isRear
+          ? "REAR"
+          : "TOP"}
+  </span>
+)}
                   <motion.button
                     whileHover={canRemove ? { scale: 1.08 } : undefined}
                     whileTap={canRemove ? { scale: 0.94 } : undefined}
@@ -393,7 +447,30 @@ export default function LinearStructureBoard({
             {isQueue ? "Front — · Rear —" : "Top —"}
           </p>
         )}
-
+        {!isQueue && (
+  <div className="mt-4 flex items-center justify-between rounded-xl border border-panelBorder bg-background/70 p-3">
+    <div>
+      <p className="text-xs font-bold uppercase tracking-widest text-textMuted">
+        Peek Top
+      </p>
+      <p className="mt-1 font-mono text-lg font-bold text-gold">
+        {topItem ? topItem.value : "Stack is empty"}
+      </p>
+    </div>
+    <Button
+      variant="secondary"
+      disabled={!topItem}
+      onClick={() => {
+        if (topItem) {
+          setLoadError(`Top element is ${topItem.value}. Stack unchanged.`);
+        }
+      }}
+    >
+      <Layers size={15} className="mr-2" />
+      Peek
+    </Button>
+  </div>
+)}
         {challenge.step?.type === "remove" && !completed && (
           <p className="mt-3 text-center text-xs text-textMuted">
             Select the highlighted {isQueue ? "front" : "top"} item to remove it.
