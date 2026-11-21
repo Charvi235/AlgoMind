@@ -1,12 +1,4 @@
-/**
- * socketHandlers.ts
- *
- * Registers all Socket.io events. Login is REQUIRED to connect: a socket
- * without a valid JWT is rejected during the handshake. Only Dijkstra has
- * live-match support for now; other games will plug into the same
- * roomManager + event shape later (round_data payload differs per game,
- * everything else is shared).
- */
+
 
 import type { Server, Socket } from "socket.io";
 import jwt from "jsonwebtoken";
@@ -27,12 +19,20 @@ import {
   dijkstraShortestPath,
   isValidShortestPathStep,
 } from "../utils/graphGenerator";
+import { generateFloydWarshallGraph } from "../utils/floydWarshallGenerator";
 import {
   generateBstQuestion,
   findBstInsertion,
   insertBstValue,
   type BSTNode,
 } from "../utils/bstGenerator";
+import {
+  applyLinearOperation,
+  generateLinearRound,
+  isLinearGameType,
+  publicLinearOperation,
+} from "../utils/linearStructureEngine";
+import type { LinearRound } from "../utils/linearStructureEngine";
 import User from "../models/User";
 import MatchResult from "../models/MatchResult";
 import GameSession from "../models/GameSession";
@@ -42,10 +42,17 @@ const MATCH_SECONDS = 60;
 const DISCONNECT_GRACE_MS = 15000;
 const BST_MATCH_SECONDS = 120;
 const BST_MAX_ROUNDS = 4;
+const FLOYD_WARSHALL_MAX_ROUNDS = 4;
 const GUEST_ROOM_GAMES = new Set(["bst"]);
 
 // Games that have a live (multiplayer) implementation on the server.
-const LIVE_GAMES = new Set(["dijkstra", "bst"]);
+const LIVE_GAMES = new Set([
+  "dijkstra",
+  "bst",
+  "floyd-warshall",
+  "fifo",
+  "lifo"
+]);
 
 export interface BstPlayerMatchState {
   socketId: string;
@@ -576,9 +583,132 @@ export function registerSocketHandlers(io: Server) {
 
     next();
   });
+function startFloydWarshallMatch(io: Server, room: Room) {
+  room.status = "active";
+  room.round = 1;
 
+  const roundData = generateFloydWarshallGraph(room.round);
+
+  room.currentRoundData = roundData;
+
+  room.floydWarshallState = {
+    playerProgress: new Map(
+      room.players.map((player) => [
+        player.socketId,
+        {
+          currentStep: 0,
+          matrix: roundData.initialMatrix.map((row) => [...row]),
+        },
+      ])
+    ),
+  };
+
+  io.to(room.roomId).emit("match_start", {
+    round: room.round,
+    nodes: roundData.nodes,
+    edges: roundData.edges,
+    start: roundData.start,
+    target: roundData.target,
+    initialMatrix: roundData.initialMatrix,
+    totalSteps: roundData.steps.length,
+    currentStep: roundData.steps[0]
+      ? {
+          k: roundData.steps[0].k,
+          i: roundData.steps[0].i,
+          j: roundData.steps[0].j,
+        }
+      : null,
+  });
+
+  room.matchEndTimer = setTimeout(() => {
+    void endMatch(io, room);
+  }, MATCH_SECONDS * 1000);
+}
+
+function advanceFloydWarshallRound(io: Server, room: Room) {
+  if (room.round >= FLOYD_WARSHALL_MAX_ROUNDS) {
+    void endMatch(io, room);
+    return;
+  }
+
+  room.round += 1;
+
+  const roundData = generateFloydWarshallGraph(room.round);
+  room.currentRoundData = roundData;
+
+  room.floydWarshallState = {
+    playerProgress: new Map(
+      room.players.map((player) => [
+        player.socketId,
+        {
+          currentStep: 0,
+          matrix: roundData.initialMatrix.map((row) => [...row]),
+        },
+      ])
+    ),
+  };
+
+  io.to(room.roomId).emit("floyd_round_start", {
+    round: room.round,
+    nodes: roundData.nodes,
+    edges: roundData.edges,
+    start: roundData.start,
+    target: roundData.target,
+    initialMatrix: roundData.initialMatrix,
+    totalSteps: roundData.steps.length,
+    currentStep: roundData.steps[0]
+      ? {
+          k: roundData.steps[0].k,
+          i: roundData.steps[0].i,
+          j: roundData.steps[0].j,
+        }
+      : null,
+  });
+}
+
+function emitLinearRoundState(socket: Socket, room: Room): void {
+  const roundData = room.linearRoundData;
+  const player = getPlayer(room, socket.id);
+  if (!roundData || !player || player.linearRoundCompleted) return;
+
+  const stepIndex = player.linearStepIndex ?? 0;
+
+  socket.emit("linear_round_state", {
+    roomId: room.roomId,
+    gameType: room.gameType,
+    round: room.round,
+    totalSteps: roundData.operations.length,
+    stepIndex,
+    items: player.linearItems ?? [],
+    step: publicLinearOperation(roundData.operations[stepIndex]),
+    completed: false,
+  });
+}
+
+function startLinearRound(room: Room, round: number): void {
+  if (!isLinearGameType(room.gameType)) return;
+
+  const roundData: LinearRound = generateLinearRound(room.gameType, round);
+  room.round = round;
+  room.linearRoundData = roundData;
+
+  for (const player of room.players) {
+    player.linearItems = roundData.initialItems.map((item) => ({ ...item }));
+    player.linearStepIndex = 0;
+    player.linearRoundCompleted = false;
+
+    const socket = io.sockets.sockets.get(player.socketId);
+    if (socket) emitLinearRoundState(socket, room);
+  }
+}
   function startMatch(io: Server, room: Room) {
     room.status = "active";
+    if (isLinearGameType(room.gameType)) {
+      startLinearRound(room, 1);
+      room.matchEndTimer = setTimeout(() => { void endMatch(io, room); }, MATCH_SECONDS * 1000);
+      return;
+    }
+
     room.round = 1;
     const roundData = generateDijkstraRound(1);
     room.currentRoundData = roundData;
@@ -606,14 +736,23 @@ export function registerSocketHandlers(io: Server) {
     // Single source of truth for final stats: used for the winner decision,
     // the match_end payload AND the DB save.
     // Accuracy = correct steps / all attempts (wrong clicks count).
-    const stats = room.players.map((p) => ({
-      socketId: p.socketId,
-      userId: p.userId,
-      username: p.username ?? null,
-      roundsCompleted: p.correctCount,
-      accuracy: p.attempts > 0 ? Math.round((p.totalActions / p.attempts) * 100) : 0,
-      xp: p.correctCount * 10,
-    }));
+const stats = room.players.map((p) => ({
+  socketId: p.socketId,
+  userId: p.userId,
+  username: p.username ?? null,
+
+  roundsCompleted: p.correctCount,
+  correctCount: p.totalActions,
+
+  attempts: p.attempts,
+  correctSteps: p.totalActions,
+
+  accuracy: p.attempts > 0
+    ? Math.round((p.totalActions / p.attempts) * 100)
+    : 0,
+
+  xp: p.score,
+}));
 
     // Winner: more rounds wins; if rounds are equal, higher accuracy wins;
     // only if both are equal is it a real tie (winnerSocketId stays null).
@@ -632,6 +771,7 @@ export function registerSocketHandlers(io: Server) {
         socketId: s.socketId,
         username: s.username,
         roundsCompleted: s.roundsCompleted,
+        correctCount: s.correctCount,
         accuracy: s.accuracy,
         xp: s.xp,
       })),
@@ -654,7 +794,7 @@ export function registerSocketHandlers(io: Server) {
           players: loggedIn.map((s) => ({
             user_id: s.userId!,
             username: s.username ?? "Unknown",
-            correctCount: s.roundsCompleted,
+            correctCount: s.correctCount,
             totalRounds: s.roundsCompleted,
             accuracy: s.accuracy,
             xpEarned: s.xp,
@@ -675,6 +815,8 @@ export function registerSocketHandlers(io: Server) {
             mode: "live" as const,
             status: "completed" as const,
             roundsCompleted: s.roundsCompleted,
+attempts: s.attempts,
+correctSteps: s.correctSteps,
             accuracy: s.accuracy,
             xpEarned: s.xp,
             roomId: room.roomId,
@@ -695,11 +837,11 @@ export function registerSocketHandlers(io: Server) {
     // ── Random matchmaking ──────────────────────────────────────
     socket.on("join_queue", async (payload?: { gameType?: unknown }) => {
       const gameType = typeof payload?.gameType === "string" ? payload.gameType.toLowerCase() : "";
+      if (gameType === "sorting") return;
       if (socket.data.isGuest) {
         socket.emit("live_unavailable", { message: "Guests must use a room code for BST matches." });
         return;
       }
-      if (gameType === "sorting") return;
       if (!LIVE_GAMES.has(gameType)) {
         socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
         return;
@@ -710,7 +852,11 @@ export function registerSocketHandlers(io: Server) {
       if (room) {
         for (const p of room.players) io.sockets.sockets.get(p.socketId)?.join(room.roomId);
         io.to(room.roomId).emit("matched", { roomId: room.roomId });
-        startMatch(io, room);
+        if (room.gameType === "floyd-warshall") {
+  startFloydWarshallMatch(io, room);
+} else {
+  startMatch(io, room);
+}
       } else {
         socket.emit("queue_joined");
       }
@@ -723,6 +869,7 @@ export function registerSocketHandlers(io: Server) {
     // ── Invite code flow ────────────────────────────────────────
     socket.on("create_room", async (payload?: { gameType?: unknown; userId?: unknown }) => {
       const gameType = typeof payload?.gameType === "string" ? payload.gameType.toLowerCase() : "";
+      if (gameType === "sorting") return;
       const identityError = validateClientIdentity(socket, payload as Record<string, unknown> | undefined);
       if (identityError) {
         socket.emit("live_unavailable", { message: identityError });
@@ -732,7 +879,6 @@ export function registerSocketHandlers(io: Server) {
         socket.emit("live_unavailable", { message: "Guests can only create BST room-code matches." });
         return;
       }
-      if (gameType === "sorting") return;
       if (!LIVE_GAMES.has(gameType)) {
         socket.emit("live_unavailable", { message: "Live matches are not available for this game yet." });
         return;
@@ -760,6 +906,7 @@ export function registerSocketHandlers(io: Server) {
     });
 
     socket.on("join_room", async (payload?: { code?: unknown; gameType?: unknown; userId?: unknown }) => {
+      if (payload?.gameType === "sorting") return;
       const gameType = typeof payload?.gameType === "string" ? payload.gameType.toLowerCase() : "";
       const identityError = validateClientIdentity(socket, payload as Record<string, unknown> | undefined);
       if (identityError) {
@@ -770,7 +917,6 @@ export function registerSocketHandlers(io: Server) {
         socket.emit("join_room_error", { message: "Guests can only join BST room-code matches." });
         return;
       }
-      if (payload?.gameType === "sorting") return;
       const code = typeof payload?.code === "string" ? payload.code.trim().toUpperCase() : "";
       if (!/^[A-Za-z0-9]{6}$/.test(code)) {
         socket.emit("join_room_error", { message: "Enter a valid 6-character room code." });
@@ -790,13 +936,15 @@ export function registerSocketHandlers(io: Server) {
       socket.join(room.roomId);
       socket.emit("room_joined", { roomId: room.roomId, gameType: room.gameType, code: room.code });
       io.to(room.roomId).emit("matched", { roomId: room.roomId, gameType: room.gameType, code: room.code });
-      if (room.gameType === "bst") {
-        const host = room.players[0];
-        if (host) io.to(host.socketId).emit("opponent_joined", { roomId: room.roomId, gameType: room.gameType, code: room.code });
-        startBstMatch(io, room);
-      } else {
-        startMatch(io, room);
-      }
+     if (room.gameType === "bst") {
+  const host = room.players[0];
+  if (host) io.to(host.socketId).emit("opponent_joined", { roomId: room.roomId, gameType: room.gameType, code: room.code });
+  startBstMatch(io, room);
+} else if (room.gameType === "floyd-warshall") {
+  startFloydWarshallMatch(io, room);
+} else {
+  startMatch(io, room);
+}
     });
 
     // Host leaves the invite screen before anyone joined: drop the empty
@@ -846,18 +994,240 @@ export function registerSocketHandlers(io: Server) {
     // ── Reliable round-state fetch (handles the race where match_start
     // fires before the client's Board component has mounted) ──────────
     socket.on("request_round_state", () => {
-      const room = getRoomBySocket(socket.id);
-      if (!room || !room.currentRoundData) return;
-      const data = room.currentRoundData as DijkstraRoundData;
-      socket.emit("round_state", {
-        round: room.round,
-        nodes: data.nodes,
-        edges: data.edges,
-        start: data.start,
-        target: data.target,
-      });
+  const room = getRoomBySocket(socket.id);
+  if (!room || !room.currentRoundData) return;
+
+  if (room.gameType === "floyd-warshall") {
+    const data = room.currentRoundData as ReturnType<
+      typeof generateFloydWarshallGraph
+    >;
+
+    const progress = room.floydWarshallState?.playerProgress.get(socket.id);
+    if (!progress) return;
+
+    socket.emit("round_state", {
+      round: room.round,
+      nodes: data.nodes,
+      edges: data.edges,
+      start: data.start,
+      target: data.target,
+      initialMatrix: progress.matrix,
+      totalSteps: data.steps.length,
+      currentStep: data.steps[progress.currentStep]
+        ? {
+            k: data.steps[progress.currentStep].k,
+            i: data.steps[progress.currentStep].i,
+            j: data.steps[progress.currentStep].j,
+          }
+        : null,
     });
 
+    return;
+  }
+
+  const data = room.currentRoundData as DijkstraRoundData;
+
+  socket.emit("round_state", {
+    round: room.round,
+    nodes: data.nodes,
+    edges: data.edges,
+    start: data.start,
+    target: data.target,
+  });
+});
+
+// Floyd-Warshall answer submission
+socket.on("submit_floyd_answer", (payload?: { value?: unknown }) => {
+  const room = getRoomBySocket(socket.id);
+
+  if (
+    !room ||
+    room.gameType !== "floyd-warshall" ||
+    room.status !== "active" ||
+    !room.currentRoundData ||
+    !room.floydWarshallState
+  ) {
+    return;
+  }
+
+  const data = room.currentRoundData as ReturnType<
+    typeof generateFloydWarshallGraph
+  >;
+
+  const player = getPlayer(room, socket.id);
+  const progress = room.floydWarshallState.playerProgress.get(socket.id);
+
+  if (!player || !progress) return;
+  if (progress.currentStep >= data.steps.length) return;
+
+  player.attempts += 1;
+
+  const expectedStep = data.steps[progress.currentStep];
+  const value = payload?.value;
+
+  const correct =
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value === expectedStep.newValue;
+
+  if (correct) {
+    progress.matrix[expectedStep.i][expectedStep.j] =
+      expectedStep.newValue;
+
+    progress.currentStep += 1;
+    player.totalActions += 1;
+    player.correctCount += 1;
+    player.score += 10;
+  }
+
+  const completed = progress.currentStep >= data.steps.length;
+
+  socket.emit("floyd_answer_result", {
+    correct,
+    matrix: progress.matrix.map((row) => [...row]),
+    stepIndex: progress.currentStep,
+    totalSteps: data.steps.length,
+    currentStep: data.steps[progress.currentStep]
+      ? {
+          k: data.steps[progress.currentStep].k,
+          i: data.steps[progress.currentStep].i,
+          j: data.steps[progress.currentStep].j,
+        }
+      : null,
+    completed,
+    score: player.score,
+  });
+
+  if (completed) {
+    const allPlayersCompleted = room.players.every((roomPlayer) => {
+      const playerProgress =
+        room.floydWarshallState?.playerProgress.get(roomPlayer.socketId);
+
+      return (
+        playerProgress &&
+        playerProgress.currentStep >= data.steps.length
+      );
+    });
+
+    if (allPlayersCompleted) {
+      advanceFloydWarshallRound(io, room);
+    }
+  }
+});
+
+// FIFO/LIFO state request
+socket.on("request_linear_state", () => {
+  const room = getRoomBySocket(socket.id);
+
+  if (!room || !isLinearGameType(room.gameType) || room.status !== "active") {
+    return;
+  }
+
+  emitLinearRoundState(socket, room);
+});
+
+// FIFO/LIFO answer submission
+socket.on(
+  "submit_linear_step",
+  (payload?: { stepIndex?: unknown; itemId?: unknown }) => {
+    const room = getRoomBySocket(socket.id);
+    const player = room && getPlayer(room, socket.id);
+    const roundData = room?.linearRoundData;
+
+    if (
+      !room ||
+      room.status !== "active" ||
+      !isLinearGameType(room.gameType) ||
+      !player ||
+      !roundData ||
+      player.linearRoundCompleted
+    ) return;
+
+    const stepIndex = player.linearStepIndex ?? 0;
+
+    if (payload?.stepIndex !== stepIndex) {
+      emitLinearRoundState(socket, room);
+      return;
+    }
+
+    const itemId = payload?.itemId;
+
+    if (
+      itemId !== undefined &&
+      (typeof itemId !== "number" || !Number.isSafeInteger(itemId))
+    ) {
+      socket.emit("linear_step_result", {
+        correct: false,
+        roomId: room.roomId,
+        error: "Select a valid item.",
+      });
+      return;
+    }
+
+    const operation = roundData.operations[stepIndex];
+    if (!operation) return;
+
+    player.attempts += 1;
+
+    const result = applyLinearOperation(
+      room.gameType,
+      player.linearItems ?? [],
+      operation,
+      itemId as number | undefined
+    );
+
+    const nextStepIndex = result.correct ? stepIndex + 1 : stepIndex;
+    const completed =
+      result.correct && nextStepIndex >= roundData.operations.length;
+
+    if (result.correct) {
+      player.totalActions += 1;
+      player.score += 10;
+
+      for (const roomPlayer of room.players) {
+        roomPlayer.linearItems = result.items.map((item) => ({ ...item }));
+        roomPlayer.linearStepIndex = nextStepIndex;
+        roomPlayer.linearRoundCompleted = completed;
+
+        if (completed) roomPlayer.correctCount += 1;
+      }
+    }
+
+    const stepResult = {
+      correct: result.correct,
+      roomId: room.roomId,
+      gameType: room.gameType,
+      round: room.round,
+      totalSteps: roundData.operations.length,
+      stepIndex: nextStepIndex,
+      items: player.linearItems ?? [],
+      step: completed
+        ? null
+        : publicLinearOperation(roundData.operations[nextStepIndex]),
+      completed,
+      waitingForOpponent: false,
+    };
+
+    if (result.correct) {
+      io.to(room.roomId).emit("linear_step_result", stepResult);
+    } else {
+      socket.emit("linear_step_result", stepResult);
+    }
+
+    io.to(room.roomId).emit("linear_progress", {
+      roomId: room.roomId,
+      players: room.players.map((entry) => ({
+        socketId: entry.socketId,
+        score: entry.score,
+        correctCount: entry.correctCount,
+      })),
+    });
+
+    if (completed) {
+      startLinearRound(room, room.round + 1);
+    }
+  }
+);
     // ── Gameplay ─────────────────────────────────────────────────
     socket.on(
       "submit_step",

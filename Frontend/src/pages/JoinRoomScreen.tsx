@@ -94,13 +94,11 @@ export default function JoinRoomScreen({ initialCode: propCode }: JoinRoomScreen
       setCodeError(message);
     };
     cleanupJoinRef.current = () => {
-      socket.off("matched", onJoined);
       socket.off("room_joined", onJoined);
       socket.off("join_room_error", onRoomError);
       socket.off("sorting_room_error", onRoomError);
       socket.off("live_unavailable", onRoomError);
     };
-    socket.on("matched", onJoined);
     socket.on("room_joined", onJoined);
     socket.on("join_room_error", onRoomError);
     socket.on("sorting_room_error", onRoomError);
@@ -118,17 +116,24 @@ export default function JoinRoomScreen({ initialCode: propCode }: JoinRoomScreen
   // Auto-submit when a pre-filled code is passed (deep-link flow)
   useEffect(() => {
     if (!autoSubmit || seedCode.length !== 6) return;
-    const onJoined = (data: { roomId: string; gameType?: string }) => {
+    function cleanup() {
+      socket.off("room_joined", onJoined);
+      socket.off("join_room_error", onRoomError);
+      socket.off("sorting_room_error", onRoomError);
+      socket.off("live_unavailable", onRoomError);
+    }
+    function onJoined(data: { roomId: string; gameType?: string }) {
+      cleanup();
       setJoining(false);
       const resolvedGameType = data.gameType ?? requestedGameType ?? "dijkstra";
       navigate(`/game/${resolvedGameType}/match/${data.roomId}`);
-    };
-    const onRoomError = ({ message }: { message: string }) => {
+    }
+    function onRoomError({ message }: { message: string }) {
+      cleanup();
       setJoining(false);
       setCodeError(message);
-    };
+    }
 
-    socket.on("matched", onJoined);
     socket.on("room_joined", onJoined);
     socket.on("join_room_error", onRoomError);
     socket.on("sorting_room_error", onRoomError);
@@ -136,13 +141,7 @@ export default function JoinRoomScreen({ initialCode: propCode }: JoinRoomScreen
     if (!socket.connected) socket.connect();
     socket.emit("join_room", { code: seedCode.toUpperCase(), gameType: requestedGameType });
 
-    return () => {
-      socket.off("matched", onJoined);
-      socket.off("room_joined", onJoined);
-      socket.off("join_room_error", onRoomError);
-      socket.off("sorting_room_error", onRoomError);
-      socket.off("live_unavailable", onRoomError);
-    };
+    return cleanup;
   }, [autoSubmit, navigate, requestedGameType, seedCode]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {

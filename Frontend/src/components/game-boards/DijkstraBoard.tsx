@@ -112,7 +112,7 @@ function computeForceLayout(nodes: SimpleNode[], edges: SimpleEdge[]): LaidOutNo
   }));
 }
 
-// ─── Client-side helpers (hint-path display only, never used for validation) ─
+// ─── Client-side adjacency (used for neighbour list and node highlighting) ───
 function buildAdjacency(edges: SimpleEdge[]) {
   const adj = new Map<string, { id: string; weight: number }[]>();
   for (const e of edges) {
@@ -122,35 +122,6 @@ function buildAdjacency(edges: SimpleEdge[]) {
     adj.get(e.target)!.push({ id: e.source, weight: e.weight });
   }
   return adj;
-}
-
-function dijkstra(start: string, nodes: SimpleNode[], edges: SimpleEdge[]) {
-  const adj = buildAdjacency(edges);
-  const dist = new Map<string, number>();
-  const prev = new Map<string, string | null>();
-  const visited = new Set<string>();
-  for (const n of nodes) { dist.set(n.id, Infinity); prev.set(n.id, null); }
-  dist.set(start, 0);
-  const queue = new Set(nodes.map((n) => n.id));
-  while (queue.size) {
-    let u = ""; let minD = Infinity;
-    for (const id of queue) { const d = dist.get(id)!; if (d < minD) { minD = d; u = id; } }
-    if (!u || minD === Infinity) break;
-    queue.delete(u); visited.add(u);
-    for (const { id: v, weight } of adj.get(u) ?? []) {
-      if (visited.has(v)) continue;
-      const alt = dist.get(u)! + weight;
-      if (alt < dist.get(v)!) { dist.set(v, alt); prev.set(v, u); }
-    }
-  }
-  return { dist, prev };
-}
-
-function buildOptimalPath(target: string, prev: Map<string, string | null>): string[] {
-  const path: string[] = [];
-  let cur: string | null = target;
-  while (cur) { path.unshift(cur); cur = prev.get(cur) ?? null; }
-  return path;
 }
 
 const edgeKey = (a: string, b: string) => [a, b].sort().join("--");
@@ -254,13 +225,6 @@ export default function DijkstraBoard({
   const labelById = new Map((graph?.nodes ?? []).map((n) => [n.id, n.label]));
   const labelOf = (id: string) => labelById.get(id) ?? id;
 
-  // Client still computes the optimal path JUST for the "Show optimal
-  // path" hint UI — actual move validation always goes through the
-  // server (see handlePick), so this can't be used to cheat.
-  const { prev: optPrev } = graph
-    ? dijkstra(graph.start, graph.nodes, graph.edges)
-    : { prev: new Map() };
-  const optimalPath = graph ? buildOptimalPath(graph.target, optPrev) : [];
   const adjacency   = graph ? buildAdjacency(graph.edges) : new Map();
 
   useEffect(() => {
@@ -349,7 +313,7 @@ export default function DijkstraBoard({
       })
       .catch(() => setLoadError("Couldn't validate that move. Check your connection."))
       .finally(() => setValidating(false));
-  }, [game, graph, validating, seconds, onWin, onRoundComplete, optimalPath.length, mode]);
+  }, [game, graph, validating, seconds, onWin, onRoundComplete, mode]);
 
   const handleReset = useCallback(() => {
     if (!graph) return;
@@ -596,15 +560,6 @@ export default function DijkstraBoard({
                 </ul>
               )}
             </div>
-            <details className="group">
-              <summary className="cursor-pointer text-xs text-textMuted hover:text-textPrimary transition-colors list-none flex items-center gap-1">
-                <ChevronRight size={12} className="group-open:rotate-90 transition-transform" aria-hidden="true" />
-                Show optimal path
-              </summary>
-              <p className="mt-2 font-mono text-xs text-teal break-all">
-                {optimalPath.map(labelOf).join(" → ")}
-              </p>
-            </details>
           </Card>
 
           <Card className="!p-4 flex flex-col gap-2">
